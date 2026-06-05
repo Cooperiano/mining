@@ -1,0 +1,56 @@
+# Binaries
+alpha-miner
+CUDA-kernal
+pearl-miner-v8
+pearl-bin/
+Pearl Miner.app/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Logs
+*.log
+logs/
+
+# Runtime state
+.vast_bad
+.vast_blacklist
+.vast_deployed
+.vast_saved
+electron-app/state/locks/
+electron-app/state/*.jsonl
+electron-app/state/sessions.json
+electron-app/state/price_cache.json
+electron-app/state/deployed.json
+electron-app/state/cost_effective_offers.json
+electron-app/state/deploy_times.json
+mining-agent-system/state/
+
+# Backups
+*.backup
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+
+# Claude Code
+.claude/

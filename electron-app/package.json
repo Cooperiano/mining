@@ -1,0 +1,38 @@
+{
+  "name": "pearl-miner",
+  "version": "1.0.0",
+  "description": "Pearl mining operations — session lifecycle management",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder build --mac",
+    "build:dir": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder build --mac --dir"
+  },
+  "build": {
+    "appId": "com.pearl.miner",
+    "productName": "Pearl Miner",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "pool.js",
+      "profit-engine.js",
+      "session-store.js",
+      "vast.js",
+      "price.js",
+      "gpu.js",
+      "state/**/*"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1"
+  }
+}
