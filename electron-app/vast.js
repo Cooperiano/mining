@@ -1,11 +1,18 @@
 const { execFile } = require('child_process');
+const path = require('path');
+const os = require('os');
+
+// Resolve vastai binary — conda env may not be on Electron's PATH
+const VASTAI_BIN = process.env.VASTAI_PATH ||
+  path.join(os.homedir(), 'miniconda3', 'envs', 'xiaohongshu', 'Scripts',
+    process.platform === 'win32' ? 'vastai.exe' : 'vastai');
 
 const cache = new Map();
 const inFlight = new Map();
 
 function vastCli(args, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    execFile('vastai', [...args, '--raw'], {
+    execFile(VASTAI_BIN, [...args, '--raw'], {
       encoding: 'utf8',
       timeout,
       maxBuffer: 1024 * 1024,
@@ -43,6 +50,9 @@ function parseVastInstances(data) {
     num_gpus: obj.num_gpus || 1,
     price: parseFloat(obj.dph_total || obj.min_bid || 0),
     dph_total: parseFloat(obj.dph_total || obj.min_bid || 0),
+    is_bid: !!obj.is_bid,
+    min_bid: parseFloat(obj.min_bid || 0),
+    dlperf_per_dphtotal: parseFloat(obj.dlperf_per_dphtotal || 0),
     ssh_host: obj.ssh_host || obj.direct_port_host || '',
     ssh_port: obj.ssh_port || obj.direct_port_start || 22,
   }));
@@ -73,7 +83,7 @@ async function getBillingTotal() {
         if (nextToken) args.push('--next-token', nextToken);
 
         const pageData = await new Promise((resolve) => {
-          const child = spawn('vastai', args, {
+          const child = spawn(VASTAI_BIN, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             timeout: 15000,
           });

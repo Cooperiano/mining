@@ -26,11 +26,25 @@ from manager.vast import (
     _load_electron_config,
     _min_th_for_model,
     _parse_gpu_model,
+    _run,
     _snapshot_instances,
+    _state_dir,
     _vastai,
     API_URL,
+    change_bid,
 )
 from manager.audit import log_event
+from manager.bid_manager import (
+    TIER_NO_ACTION_REPLACE_RECOMMENDED,
+    calc_bid_adjustment,
+    calc_margin_per_hr,
+    calc_max_bid,
+    classify_margin,
+    get_or_create_entry,
+    mark_explicitly_killed,
+    record_bid_action,
+    update_consecutive_tier,
+)
 from manager.recorder import record_kill_decision
 
 
@@ -109,11 +123,12 @@ class SharedState:
             return set(self._instances.keys())
 
     def get_workers_for_tag(self, tag: str) -> list[dict[str, Any]]:
-        """Return AlphaPool workers whose name ends with the given instance tag."""
+        """Return AlphaPool workers explicitly tagged with this instance suffix."""
+        pattern = re.compile(rf"-{re.escape(tag)}\.gpu\d+$", re.IGNORECASE)
         with self._lock:
             return [
                 w for w in self._workers
-                if isinstance(w, dict) and tag in w.get("name", "")
+                if isinstance(w, dict) and pattern.search(str(w.get("name", "")))
             ]
 
     def get_all_workers(self) -> list[dict[str, Any]]:
@@ -144,6 +159,9 @@ class InstanceManager:
         self.state: str = "new"
         self.last_action: float = 0.0
         self.consecutive_failures: int = 0
+        self.health_failures: int = 0
+        self.redeploy_attempts: int = 0
+        self.quarantined: bool = False
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -236,9 +254,10 @@ class InstanceManager:
         if not lock.acquire():
             return  # locked, try again later
         try:
+            self.state = "deploying"
             result = _deploy_instance_inner(self.inst_id)
             self.last_action = time.time()
-            if result.startswith("OK:"):
+            if self._deploy_succeeded(result):
                 self.state = "running"
                 self.consecutive_failures = 0
                 log_event("manager_deploy_ok", instance_id=self.inst_id,
@@ -247,9 +266,11 @@ class InstanceManager:
                 self.consecutive_failures += 1
                 log_event("manager_deploy_fail", instance_id=self.inst_id,
                           details=result[:200])
-                # Too many failures → stop managing
-                if self.consecutive_failures >= 3:
+                retry_limit = int(cfg.get("consecutive_failures_before_destroy", 3))
+                if self.consecutive_failures >= retry_limit:
                     self.state = "stopped"
+                else:
+                    self.state = "new"
         finally:
             lock.release()
 
@@ -266,8 +287,40 @@ class InstanceManager:
             return
 
         if inst.get("actual_status") != "running":
+            # If this was an interruptible instance and not explicitly killed,
+            # it was likely preempted — record for bid history (V2 will use this)
+            if inst.get("is_bid", False):
+                from manager.bid_manager import increment_preemption, get_or_create_entry
+                state_dir = str(self._state_dir())
+                entry = get_or_create_entry(state_dir, self.inst_id)
+                if not entry.get("explicitly_killed", False):
+                    increment_preemption(state_dir, self.inst_id)
+                    log_event("preemption_detected", instance_id=self.inst_id,
+                              details=f"preemption_count={entry.get('preemption_count', 0) + 1}")
             self.state = "stopped"
             return
+
+        if self.quarantined:
+            return
+
+        # Local health is the strongest signal that a deployed instance is
+        # actually mining. Pool data may lag and deployed.json may be stale.
+        local_health = self._inspect_local_health(inst)
+        if local_health["needs_redeploy"]:
+            self.health_failures += 1
+            log_event("local_health_fail", instance_id=self.inst_id,
+                      details=f"{local_health['issue']} ({self.health_failures})")
+            threshold = int(cfg.get("consecutive_failures_before_destroy", 3))
+            if self.health_failures >= threshold:
+                self._redeploy(cfg, local_health["issue"])
+            return
+        if local_health["checked"]:
+            self.health_failures = 0
+
+        # ── Dynamic bid check (interruptible only) ──
+        if self._should_check_bid(inst, cfg):
+            self._handle_dynamic_bid(inst, cfg)
+            # V1: never changes state to killed/stopped here
 
         # ── Cost check ──
         if self._is_overpriced(inst, cfg):
@@ -346,14 +399,149 @@ class InstanceManager:
 
     # ── action helpers ──
 
-    def _kill(self, inst: dict, cfg: dict, reason: str) -> None:
-        """Kill this instance."""
-        dry_run = bool(cfg.get("dry_run", False))
-        auto_destroy = bool(cfg.get("auto_destroy_enabled", False))
+    @staticmethod
+    def _deploy_succeeded(result: str) -> bool:
+        """Accept both legacy and current deploy success prefixes."""
+        return result.startswith("Deployed:") or result.startswith("OK:")
 
-        if dry_run or not auto_destroy:
+    def _inspect_local_health(self, inst: dict) -> dict[str, Any]:
+        """Check SSH/miner/GPU health without treating pool lag as failure.
+
+        Returns:
+            checked: SSH command returned useful output.
+            needs_redeploy: local evidence says the miner is not running.
+            issue: concise reason for logs.
+        """
+        pool_workers = self.shared.get_workers_for_tag(self._extract_tag())
+        pool_online = any(w.get("online") for w in pool_workers if isinstance(w, dict))
+
+        rc, ssh_url, _ = _vastai(["ssh-url", self.inst_id], timeout=10)
+        match = re.search(r"@([^:]+):(\d+)", ssh_url.strip()) if rc == 0 else None
+        if not match:
+            # If pool is still online, do not redeploy or kill just because SSH is down.
+            return {
+                "checked": False,
+                "needs_redeploy": False,
+                "issue": "SSH unavailable; pool online" if pool_online else "SSH unavailable",
+            }
+
+        host, port = match.group(1), match.group(2)
+        remote_cmd = (
+            "echo MINER=$(pgrep -c alpha-miner 2>/dev/null || true); "
+            "nvidia-smi --query-gpu=utilization.gpu,memory.used "
+            "--format=csv,noheader,nounits 2>/dev/null | sed 's/^/GPU=/'"
+        )
+        cmd = [
+            "ssh", "-q", "-o", "ConnectTimeout=8",
+            "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=QUIET",
+            f"root@{host}", "-p", port, remote_cmd,
+        ]
+        rc2, output, _ = _run(cmd, timeout=15)
+        if rc2 != 0 or "MINER=" not in output:
+            return {
+                "checked": False,
+                "needs_redeploy": False,
+                "issue": "SSH check failed",
+            }
+
+        miner_match = re.search(r"MINER=(\d+)", output)
+        miner_running = bool(miner_match and int(miner_match.group(1)) > 0)
+        gpu_rows = [
+            (int(m.group(1)), int(m.group(2)))
+            for m in re.finditer(r"GPU=\s*(\d+),\s*(\d+)", output)
+        ]
+
+        if not miner_running:
+            return {"checked": True, "needs_redeploy": True, "issue": "miner not running"}
+        if not gpu_rows:
+            return {"checked": True, "needs_redeploy": True, "issue": "GPU metrics unavailable"}
+
+        avg_util = sum(row[0] for row in gpu_rows) / len(gpu_rows)
+        min_vram = min(row[1] for row in gpu_rows)
+        if avg_util < 20 and not pool_online:
+            return {
+                "checked": True,
+                "needs_redeploy": True,
+                "issue": f"low GPU load ({avg_util:.0f}%) and no pool worker",
+            }
+        if min_vram < 500 and not pool_online:
+            return {
+                "checked": True,
+                "needs_redeploy": True,
+                "issue": "low VRAM and no pool worker",
+            }
+
+        return {"checked": True, "needs_redeploy": False, "issue": "healthy"}
+
+    def _redeploy(self, cfg: dict, reason: str) -> None:
+        """Redeploy miner on a running instance with cooldown and attempt cap."""
+        dry_run = bool(cfg.get("dry_run", False))
+        auto_deploy = bool(cfg.get("auto_deploy_enabled", True))
+        if not auto_deploy:
+            log_event("redeploy_skip", instance_id=self.inst_id,
+                      details=f"auto_deploy disabled; {reason}")
+            return
+        if dry_run:
+            log_event("dry_redeploy", instance_id=self.inst_id,
+                      details=f"would redeploy: {reason}")
+            self.health_failures = 0
+            return
+
+        cooldown = float(cfg.get("redeploy_cooldown_sec", 300))
+        if self.last_action and time.time() - self.last_action < cooldown:
+            log_event("redeploy_cooldown", instance_id=self.inst_id,
+                      details=f"{reason}; waiting {cooldown:.0f}s")
+            return
+
+        max_attempts = int(cfg.get("max_redeploy_attempts", 2))
+        if self.redeploy_attempts >= max_attempts:
+            self.quarantined = True
+            log_event("quarantine", instance_id=self.inst_id,
+                      details=f"redeploy attempts exhausted: {reason}")
+            return
+
+        lock = InstanceLock(self.inst_id)
+        if not lock.acquire():
+            return
+
+        try:
+            self.redeploy_attempts += 1
+            self.last_action = time.time()
+            log_event("manager_redeploy", instance_id=self.inst_id,
+                      details=f"{reason}; attempt {self.redeploy_attempts}/{max_attempts}")
+            result = _deploy_instance_inner(self.inst_id)
+            if self._deploy_succeeded(result):
+                self.state = "running"
+                self.health_failures = 0
+                log_event("manager_redeploy_ok", instance_id=self.inst_id,
+                          details=result[:200])
+            else:
+                log_event("manager_redeploy_fail", instance_id=self.inst_id,
+                          details=result[:200])
+        finally:
+            lock.release()
+
+    def _kill(self, inst: dict, cfg: dict, reason: str) -> None:
+        """Kill this instance.
+
+        Respects granular kill switches:
+          - too_expensive → cost_kill_enabled
+          - underperforming → performance_kill_enabled
+          - manual/other → auto_destroy_enabled (fallback)
+        """
+        dry_run = bool(cfg.get("dry_run", False))
+
+        # ── Granular kill enable check ──
+        if reason == "too_expensive":
+            allowed = bool(cfg.get("cost_kill_enabled", False))
+        elif reason == "underperforming":
+            allowed = bool(cfg.get("performance_kill_enabled", False))
+        else:
+            allowed = bool(cfg.get("auto_destroy_enabled", False))
+
+        if dry_run or not allowed:
             log_event("dry_kill", instance_id=self.inst_id,
-                      details=f"would kill ({reason})")
+                      details=f"would kill ({reason}); enabled={allowed}, dry_run={dry_run}")
             return
 
         lock = InstanceLock(self.inst_id)
@@ -370,6 +558,15 @@ class InstanceManager:
                 dph_total = 0.0
             price_per_gpu = dph_total / num_gpus if num_gpus > 0 else dph_total
 
+            # ── Blacklist decision ──
+            should_blacklist = False
+            if reason == "too_expensive":
+                should_blacklist = bool(cfg.get("cost_blacklist_enabled", True))
+            elif reason == "underperforming":
+                should_blacklist = bool(cfg.get("performance_blacklist_enabled", False))
+            # manual/redeploy/other reasons never blacklist
+            # preempted/ssh_unavailable/pool_lag do not reach _kill() in normal flow
+
             # Build reason string
             if reason == "too_expensive":
                 threshold = _calc_max_price_per_gpu(gpu_name)
@@ -377,12 +574,14 @@ class InstanceManager:
             else:
                 reason_str = f"underperforming {gpu_model}"
 
-            result = _kill_instance_inner(self.inst_id, reason_str)
+            result = _kill_instance_inner(self.inst_id, reason_str, blacklist=should_blacklist)
             self.last_action = time.time()
 
             executed = result.startswith("Destroyed:")
             if executed:
                 self.state = "killing"
+                # Mark as explicitly killed (not preempted) for bid history
+                mark_explicitly_killed(str(self._state_dir()), self.inst_id)
 
             record_kill_decision(
                 instance_id=self.inst_id,
@@ -398,6 +597,130 @@ class InstanceManager:
             )
         finally:
             lock.release()
+
+    # ── dynamic bid helpers ──
+
+    def _should_check_bid(self, inst: dict, cfg: dict) -> bool:
+        """Return True if dynamic bid adjustment should run for this instance."""
+        if not cfg.get("dynamic_bid_enabled", False):
+            return False
+        # Only interruptible/spot instances
+        if not inst.get("is_bid", False):
+            return False
+        # Warm-up protection
+        protection_min = float(cfg.get("new_instance_protection_minutes", 15))
+        if self.last_action and (time.time() - self.last_action) < protection_min * 60:
+            return False
+        # Must have workers with h1_th data
+        tag = self._extract_tag()
+        if not tag:
+            return False
+        workers = self.shared.get_workers_for_tag(tag)
+        return any(w.get("online") for w in workers if isinstance(w, dict))
+
+    def _handle_dynamic_bid(self, inst: dict, cfg: dict) -> None:
+        """V1: profit-aware bid adjustment. Only changes bid, never destroy/create/deploy."""
+        tag = self._extract_tag()
+        workers = self.shared.get_workers_for_tag(tag)
+
+        # Calculate margin and classify
+        margin = calc_margin_per_hr(inst, workers, cfg)
+        tier = classify_margin(margin, cfg)
+
+        # Get current bid price from instance data
+        try:
+            current_bid = float(inst.get("min_bid", 0))
+        except (TypeError, ValueError):
+            current_bid = 0.0
+
+        # Get DLPerf/$ for quality gate
+        try:
+            dlperf_per_dollar = float(inst.get("dlperf_per_dphtotal", 0))
+        except (TypeError, ValueError):
+            dlperf_per_dollar = None
+
+        # GPU model for history tracking
+        gpu_name = inst.get("gpu_name", "")
+        gpu_model = _parse_gpu_model(gpu_name) or gpu_name.lower().replace(" ", "_")
+
+        # State directory for bid history
+        state_dir = str(self._state_dir())
+
+        # Update consecutive tier count
+        history_entry = update_consecutive_tier(state_dir, self.inst_id, tier)
+
+        # Ensure entry exists with metadata
+        if not history_entry.get("gpu_model"):
+            get_or_create_entry(state_dir, self.inst_id, gpu_model, current_bid)
+
+        # Log NO_ACTION_REPLACE_RECOMMENDED (V1: no auto-action)
+        if tier == TIER_NO_ACTION_REPLACE_RECOMMENDED:
+            log_event("bid_replace_recommended", instance_id=self.inst_id,
+                      details=f"margin=${margin:.4f}/hr negative — replacement recommended (V1: no action)")
+            return
+
+        # Calculate max bid (the ONLY hard ceiling)
+        max_bid = calc_max_bid(inst, workers, cfg)
+
+        # Calculate potential adjustment
+        new_bid = calc_bid_adjustment(
+            current_bid, max_bid, tier, history_entry, cfg,
+            dlperf_per_dollar=dlperf_per_dollar,
+        )
+
+        if new_bid is None:
+            return  # no change needed or hysteresis conditions not met
+
+        # Determine action/reason for logging
+        if new_bid > current_bid:
+            action = "raise"
+            # Check if preempted recently for reason
+            hist = history_entry.get("history", [])
+            reason = "preempted_recently" if any(
+                h.get("action") == "raise" and h.get("reason") == "preempted_recently"
+                and (time.time() - h.get("ts", 0)) < 7200
+                for h in reversed(hist[-10:])
+            ) else "tier_defense"
+        else:
+            action = "lower"
+            reason = "stable_safe"
+
+        dry_run = bool(cfg.get("dry_run", False))
+        now = time.time()
+
+        if dry_run:
+            # HARD RULE: dry_run=true MUST NEVER call vastai change bid
+            log_event("dry_bid_adjust", instance_id=self.inst_id,
+                      details=f"would {action} bid ${current_bid:.4f} → ${new_bid:.4f} "
+                              f"(tier={tier} margin=${margin:.4f}/hr max=${max_bid:.4f} "
+                              f"reason={reason})")
+        else:
+            rc, stdout, stderr = change_bid(self.inst_id, new_bid)
+            if rc == 0:
+                log_event("bid_adjust", instance_id=self.inst_id,
+                          details=f"{action} bid ${current_bid:.4f} → ${new_bid:.4f} "
+                                  f"(tier={tier} margin=${margin:.4f}/hr max=${max_bid:.4f} "
+                                  f"reason={reason})")
+            else:
+                log_event("bid_adjust_fail", instance_id=self.inst_id,
+                          details=f"vastai change bid failed: rc={rc} {stderr[:100]}")
+                return  # don't record failed adjustment
+
+        # Record the action
+        record_bid_action(state_dir, self.inst_id, {
+            "ts": now,
+            "bid_before": current_bid,
+            "bid_after": new_bid,
+            "action": action,
+            "tier": tier,
+            "margin_per_hr": margin,
+            "reason": reason,
+        })
+
+    @staticmethod
+    def _state_dir() -> str:
+        """Return the state directory path, respecting PEARL_STATE_DIR env var."""
+        return str(_state_dir())
 
     def _extract_tag(self) -> str:
         """Extract the instance tag (last 4 chars of ID) for worker matching."""

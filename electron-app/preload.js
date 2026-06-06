@@ -1,6 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  // Window controls
+  minimize: () => ipcRenderer.invoke('win-minimize'),
+  maximize: () => ipcRenderer.invoke('win-maximize'),
+  close: () => ipcRenderer.invoke('win-close'),
+
   // Dashboard
   getDashboard: () => ipcRenderer.invoke('get-dashboard'),
 
@@ -28,12 +33,14 @@ contextBridge.exposeInMainWorld('api', {
   getConfigLog: (opts) => ipcRenderer.invoke('get-config-log', opts),
   getEarningsLog: (opts) => ipcRenderer.invoke('get-earnings-log', opts),
   readJsonlRaw: (filename, limit) => ipcRenderer.invoke('read-jsonl-raw', filename, limit),
+  getBidHistory: () => ipcRenderer.invoke('get-bid-history'),
   exportHistoryCSV: () => ipcRenderer.invoke('export-history-csv'),
 
   // Instances (manual deploy)
   listInstances: (force) => ipcRenderer.invoke('list-instances', force),
   refreshInstanceHealth: (force) => ipcRenderer.invoke('refresh-instance-health', force),
   deployToInstance: (instanceId) => ipcRenderer.invoke('deploy-instance', instanceId),
+  killInstance: (instanceId, reason) => ipcRenderer.invoke('kill-instance', instanceId, reason),
 
   // Interruptible offers
   scanInterruptible: () => ipcRenderer.invoke('scan-interruptible'),

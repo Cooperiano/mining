@@ -3,6 +3,7 @@
 # Usage: ./dashboard.sh [-w SECONDS]
 
 command -v ggrep &>/dev/null && GREP="ggrep" || GREP="grep"
+PYTHON="$(command -v $PYTHON 2>/dev/null || command -v python 2>/dev/null || echo python)"
 
 INTERVAL=0
 [ "$1" = "-w" ] && [ -n "$2" ] && INTERVAL=$2
@@ -26,12 +27,12 @@ run() {
     data=$(curl -s --connect-timeout 5 "$API" 2>/dev/null)
     [ -z "$data" ] && { echo "│ API unreachable"; return; }
     
-    balance=$(echo "$data" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"balance_prl\"]:.2f}')" 2>/dev/null)
-    paid=$(echo "$data" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"total_paid_prl\"]:.2f}')" 2>/dev/null)
-    total_1h=$(echo "$data" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['estHash1h'])" 2>/dev/null)
+    balance=$(echo "$data" | $PYTHON -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"balance_prl\"]:.2f}')" 2>/dev/null)
+    paid=$(echo "$data" | $PYTHON -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"total_paid_prl\"]:.2f}')" 2>/dev/null)
+    total_1h=$(echo "$data" | $PYTHON -c "import sys,json; d=json.load(sys.stdin); print(d['estHash1h'])" 2>/dev/null)
     
     total_live=0
-    workers=$(echo "$data" | python3 -c "
+    workers=$(echo "$data" | $PYTHON -c "
 import sys, json
 d = json.load(sys.stdin)
 for w in d.get('workers', []):

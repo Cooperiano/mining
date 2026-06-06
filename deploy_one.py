@@ -40,10 +40,11 @@ def _pool_hashrates() -> dict[str, float] | None:
 
 def _inspect_running(entry: dict, deployed_ids: set[str], pool_rates: dict[str, float] | None) -> dict:
     inst_id = str(entry.get("id", ""))
+    is_deployed = inst_id in deployed_ids
     result = {
-        "deployment_state": "deployed" if inst_id in deployed_ids else "pending",
+        "deployment_state": "deployed" if is_deployed else "undeployed",
         "health": "pending",
-        "issue": "Not deployed",
+        "issue": "Not deployed" if not is_deployed else "Checking...",
         "miner_running": False,
         "gpu_util": 0,
         "vram_used_mb": 0,
@@ -51,8 +52,6 @@ def _inspect_running(entry: dict, deployed_ids: set[str], pool_rates: dict[str, 
         "local_hashrate": 0,
         "pool_hashrate": round(pool_rates.get(inst_id[-4:], 0), 1) if pool_rates is not None else None,
     }
-    if inst_id not in deployed_ids:
-        return result
 
     # Vast's ssh_host/ssh_port proxy may be stale while `ssh-url` returns a
     # working direct endpoint, so always resolve the current URL.
@@ -181,6 +180,9 @@ def list_instances(include_health: bool = False):
             "gpu_name": gpu_name,
             "num_gpus": num_gpus,
             "price": round(price, 4),
+            "is_bid": bool(entry.get("is_bid", False)),
+            "min_bid": round(float(entry.get("min_bid", 0)), 4),
+            "dlperf_per_dphtotal": round(float(entry.get("dlperf_per_dphtotal", 0)), 2),
             "machine_id": machine_id,
             "ssh_host": ssh_host,
             "ssh_port": ssh_port,
@@ -223,9 +225,16 @@ def deploy(inst_id: str):
     return 0 if result.startswith("Deployed:") else 1
 
 
+def kill(inst_id: str, reason: str = "manual"):
+    """Kill (destroy) a single instance."""
+    result = vast.kill_instance(inst_id, reason=reason)
+    print(result)
+    return 0 if ("FAILED" not in result and "SKIP" not in result) else 1
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python3 deploy_one.py [list|deploy <instance_id>]")
+        print("Usage: python3 deploy_one.py [list|deploy|kill <instance_id>]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -238,7 +247,13 @@ if __name__ == "__main__":
             print("Usage: python3 deploy_one.py deploy <instance_id>")
             sys.exit(1)
         sys.exit(deploy(sys.argv[2]))
+    elif cmd == "kill":
+        if len(sys.argv) < 3:
+            print("Usage: python3 deploy_one.py kill <instance_id> [reason]")
+            sys.exit(1)
+        reason = sys.argv[3] if len(sys.argv) > 3 else "manual"
+        sys.exit(kill(sys.argv[2], reason))
     else:
         print(f"Unknown command: {cmd}")
-        print("Usage: python3 deploy_one.py [list|deploy <instance_id>]")
+        print("Usage: python3 deploy_one.py [list|deploy|kill <instance_id>]")
         sys.exit(1)

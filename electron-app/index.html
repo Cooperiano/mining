@@ -18,6 +18,11 @@
         <span class="stat" id="header-earnings">--/hr</span>
         <span class="stat" id="header-workers">-- workers</span>
       </div>
+      <div class="header-actions">
+        <button class="window-btn" id="win-minimize" title="Minimize">─</button>
+        <button class="window-btn" id="win-maximize" title="Maximize">□</button>
+        <button class="window-btn close" id="win-close" title="Close">✕</button>
+      </div>
     </header>
 
     <!-- Tabs -->
@@ -281,7 +286,7 @@
               <option value="500">500</option>
             </select>
           </div>
-          <div class="log-window" id="log-viewer-output" style="max-height:600px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:4px">
+          <div class="log-window" id="log-viewer-output" style="max-height:600px;overflow-y:auto;">
             Select a log type and click Refresh.
           </div>
         </div>
@@ -298,6 +303,7 @@
               Refresh
             </button>
             <span id="instances-count" style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px"></span>
+            <span id="bid-summary" style="font-size:12px;margin-left:16px"></span>
           </h2>
           <div class="table-wrap">
             <table id="instances-table">
@@ -313,12 +319,13 @@
                   <th>Profit/hr</th>
                   <th>Margin/hr</th>
                   <th>Price/hr</th>
+                  <th>Bid</th>
                   <th>Issue</th>
                   <th>Action</th>
                 </tr>
               </thead>
               <tbody id="instances-body">
-                <tr><td colspan="12" class="loading">Loading...</td></tr>
+                <tr><td colspan="13" class="loading">Loading...</td></tr>
               </tbody>
             </table>
           </div>
@@ -327,7 +334,7 @@
         <!-- Deploy Log -->
         <div class="card card-full">
           <h2>Deploy Output</h2>
-          <div class="log-window" id="instance-deploy-log" style="max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+          <div class="log-window log-compact" id="instance-deploy-log">
             No deploys yet.
           </div>
         </div>
@@ -348,7 +355,7 @@
           <div style="margin-bottom:12px">
             <strong>Current Status:</strong> <span id="autodeploy-status">Loading...</span>
           </div>
-          <div class="log-window" id="status-output">
+          <div class="log-window log-compact" id="status-output">
             Loading status...
           </div>
         </div>
@@ -361,7 +368,7 @@
               Refresh
             </button>
           </h2>
-          <div class="log-window" id="deploy-log" style="max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+          <div class="log-window log-compact" id="deploy-log">
             Loading log...
           </div>
         </div>
@@ -369,7 +376,7 @@
         <!-- Blacklist -->
         <div class="card card-full">
           <h2>Blacklist (Machine IDs)</h2>
-          <div class="log-window" id="blacklist-output" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+          <div class="log-window" id="blacklist-output" style="max-height:140px;overflow-y:auto;">
             Loading blacklist...
           </div>
           <div style="margin-top:12px">
@@ -386,7 +393,7 @@
               Refresh
             </button>
           </h2>
-          <div class="log-window" id="audit-log-output" style="max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+          <div class="log-window log-compact" id="audit-log-output">
             Loading audit log...
           </div>
         </div>
@@ -412,13 +419,61 @@
           <label class="config-field"><span>Vast Disk GB</span><input name="vastai_disk_gb" type="number" min="5" step="1"></label>
         </div>
 
-        <div class="card">
-          <h2>Hashrate Thresholds</h2>
-          <label class="config-field"><span>RTX 5090 Min TH/s</span><input name="min_th_5090" type="number" min="0" step="1"></label>
-          <label class="config-field"><span>RTX 4090 Min TH/s</span><input name="min_th_4090" type="number" min="0" step="1"></label>
-          <label class="config-field"><span>RTX 4060 Ti Min TH/s</span><input name="min_th_4060ti" type="number" min="0" step="1"></label>
-          <label class="config-field"><span>Kill Threshold GPU Count</span><input name="kill_threshold_gpu_count" type="number" min="1" step="1"></label>
-        </div>
+        <details class="card config-card-collapsible">
+          <summary class="card-summary"><h2>Hashrate Thresholds (Min TH/s) ▾</h2></summary>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">Workers below these 1-hr avg hashrates are flagged for kill.</div>
+          <!-- RTX 50 Series -->
+          <details class="config-group" open>
+            <summary class="config-group-title">RTX 50 Series</summary>
+            <label class="config-field"><span>5090</span><input name="min_th_5090" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>5080</span><input name="min_th_5080" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>5070 Ti</span><input name="min_th_5070_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>5070</span><input name="min_th_5070" type="number" min="0" step="1"></label>
+          </details>
+          <!-- RTX 40 Series -->
+          <details class="config-group" open>
+            <summary class="config-group-title">RTX 40 Series</summary>
+            <label class="config-field"><span>4090</span><input name="min_th_4090" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4080 Super</span><input name="min_th_4080_super" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4080</span><input name="min_th_4080" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4070 Ti Super</span><input name="min_th_4070_ti_super" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4070 Ti</span><input name="min_th_4070_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4070 Super</span><input name="min_th_4070_super" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4070</span><input name="min_th_4070" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4060 Ti</span><input name="min_th_4060_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>4060</span><input name="min_th_4060" type="number" min="0" step="1"></label>
+          </details>
+          <!-- RTX 30 Series -->
+          <details class="config-group" open>
+            <summary class="config-group-title">RTX 30 Series</summary>
+            <label class="config-field"><span>3090 Ti</span><input name="min_th_3090_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3090</span><input name="min_th_3090" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3080 Ti</span><input name="min_th_3080_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3080</span><input name="min_th_3080" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3070 Ti</span><input name="min_th_3070_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3070</span><input name="min_th_3070" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3060 Ti</span><input name="min_th_3060_ti" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>3060</span><input name="min_th_3060" type="number" min="0" step="1"></label>
+          </details>
+          <!-- Datacenter GPUs -->
+          <details class="config-group" open>
+            <summary class="config-group-title">Datacenter</summary>
+            <label class="config-field"><span>H100</span><input name="min_th_h100" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>H200</span><input name="min_th_h200" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>B200</span><input name="min_th_b200" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>A100</span><input name="min_th_a100" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>A6000</span><input name="min_th_a6000" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>A5000</span><input name="min_th_a5000" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>A4000</span><input name="min_th_a4000" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>L40S</span><input name="min_th_l40s" type="number" min="0" step="1"></label>
+            <label class="config-field"><span>L40</span><input name="min_th_l40" type="number" min="0" step="1"></label>
+          </details>
+          <!-- General -->
+          <details class="config-group" open>
+            <summary class="config-group-title">General</summary>
+            <label class="config-field"><span>Kill Threshold GPU Count</span><input name="kill_threshold_gpu_count" type="number" min="1" step="1"></label>
+          </details>
+        </details>
 
         <div class="card">
           <h2>Vast / Autodeploy</h2>
@@ -461,6 +516,44 @@
           <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
             Regions: comma-separated. Options: North America, Asia, Europe, South America, Oceania, Africa.
           </div>
+        </div>
+
+        <div class="card">
+          <h2>Dynamic Bidding (V1)</h2>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+            Profit-aware bid adjustment for interruptible instances. Raises bids on profitable instances to improve survival, lowers on stable ones to reduce cost. V1: bid changes only — no destroy/create/replace.
+          </div>
+          <label class="config-check"><input name="dynamic_bid_enabled" type="checkbox"><span>Enable dynamic bidding</span></label>
+          <label class="config-field"><span>Bid cooldown (sec)</span><input name="bid_cooldown_sec" type="number" min="60" step="60" placeholder="300"></label>
+          <label class="config-field"><span>Min margin/hr ($)</span><input name="bid_min_margin_hr" type="number" min="0" step="0.01" placeholder="0.08"></label>
+          <label class="config-field"><span>SAFE margin/hr ($)</span><input name="bid_safe_margin_hr" type="number" min="0" step="0.01" placeholder="0.10"></label>
+          <label class="config-field"><span>WATCH margin/hr ($)</span><input name="bid_watch_margin_hr" type="number" min="0" step="0.01" placeholder="0.03"></label>
+          <label class="config-field"><span>Raise max %</span><input name="bid_raise_max_pct" type="number" min="1" step="1" placeholder="10"></label>
+          <label class="config-field"><span>Lower %</span><input name="bid_lower_pct" type="number" min="1" step="1" placeholder="3"></label>
+          <label class="config-field"><span>Min adjustment ($)</span><input name="bid_min_adjustment_usd" type="number" min="0.001" step="0.001" placeholder="0.01"></label>
+          <label class="config-field"><span>Consecutive checks before raise</span><input name="bid_consecutive_before_adjust" type="number" min="1" step="1" placeholder="2"></label>
+          <label class="config-field"><span>Consecutive checks before lower</span><input name="bid_consecutive_before_lower" type="number" min="1" step="1" placeholder="3"></label>
+        </div>
+
+        <div class="card">
+          <h2>DLPerf/$ Quality Gates</h2>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+            DLPerf/$ measures GPU compute value per dollar. Lower thresholds reject bad deals; higher thresholds prefer quality.
+          </div>
+          <label class="config-field"><span>Reject (no raise below)</span><input name="reject_dlperf_per_dollar" type="number" min="0" step="10" placeholder="300"></label>
+          <label class="config-field"><span>Min acceptable</span><input name="min_dlperf_per_dollar" type="number" min="0" step="10" placeholder="350"></label>
+          <label class="config-field"><span>Preferred</span><input name="preferred_dlperf_per_dollar" type="number" min="0" step="10" placeholder="400"></label>
+        </div>
+
+        <div class="card">
+          <h2>Kill Controls</h2>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+            Granular kill switches. <code>auto_destroy_enabled</code> above must be ON for manual kill buttons to work. The switches below control automated kill decisions.
+          </div>
+          <label class="config-check"><input name="cost_kill_enabled" type="checkbox"><span>Cost kill — destroy instances that are too expensive ($/GPU over threshold)</span></label>
+          <label class="config-check"><input name="cost_blacklist_enabled" type="checkbox"><span>Cost blacklist — ban machines killed for cost reasons</span></label>
+          <label class="config-check"><input name="performance_kill_enabled" type="checkbox"><span>Performance kill — destroy instances with consistently low hashrate</span></label>
+          <label class="config-check"><input name="performance_blacklist_enabled" type="checkbox"><span>Performance blacklist — ban machines killed for performance</span></label>
         </div>
 
         <div class="card card-full config-actions">

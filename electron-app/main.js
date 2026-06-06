@@ -24,7 +24,19 @@ let instanceHealthPromise = null;
 let profitCache = { time: 0, data: null };
 let profitPromise = null;
 let watchers = [];
-const MINING_DIR = '/Users/juliancooper/Desktop/projects/mining';
+const MINING_DIR = path.resolve(__dirname, '..');
+
+// Platform compatibility
+const IS_WIN = process.platform === 'win32';
+const PYTHON_BIN = process.env.PYTHON_BIN || (IS_WIN ? 'python' : 'python3');
+
+// Windows can't execFile .sh scripts — wrap with bash
+function manageExec(args, opts, cb) {
+  if (IS_WIN) {
+    return exec(`bash ./manage.sh ${args[0]}`, opts, cb);
+  }
+  return execFile('./manage.sh', args, opts, cb);
+}
 
 function pythonEnv() {
   return { ...process.env, PEARL_STATE_DIR: path.join(app.getPath('userData'), 'state') };
@@ -68,6 +80,11 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'Pearl Miner — Analytics',
+    backgroundColor: '#0a0a0f',
+    frame: IS_WIN ? false : true,
+    ...(IS_WIN ? {
+      titleBarStyle: 'hidden',
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -88,6 +105,13 @@ function createWindow() {
 }
 
 function registerIPC() {
+  // Window controls
+  ipcMain.handle('win-minimize', () => mainWindow?.minimize());
+  ipcMain.handle('win-maximize', () => {
+    mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow?.maximize();
+  });
+  ipcMain.handle('win-close', () => mainWindow?.close());
+
   // Dashboard
   ipcMain.handle('get-dashboard', async () => {
     const dashData = await pool.getDashboardData();
@@ -159,6 +183,17 @@ function registerIPC() {
     return store.readJsonlRaw(filename, limit);
   });
 
+  // Bid history (from Python bid_manager)
+  ipcMain.handle('get-bid-history', async () => {
+    const bidPath = path.join(MINING_DIR, 'electron-app', 'state', 'bid_history.json');
+    try {
+      if (fs.existsSync(bidPath)) {
+        return JSON.parse(fs.readFileSync(bidPath, 'utf8'));
+      }
+    } catch (_) {}
+    return {};
+  });
+
   ipcMain.handle('export-history-csv', async () => {
     return store.exportHistoryCSV();
   });
@@ -167,7 +202,7 @@ function registerIPC() {
   // Interruptible offers scan
   ipcMain.handle('scan-interruptible', async () => {
     return new Promise((resolve) => {
-      execFile('python3', ['-m', 'manager.vast'], {
+      execFile(PYTHON_BIN, ['-m', 'manager.vast'], {
         cwd: MINING_DIR,
         timeout: 120000,
         encoding: 'utf8',
@@ -210,7 +245,7 @@ function registerIPC() {
 
   ipcMain.handle('deploy-now', async () => {
     return new Promise((resolve) => {
-      execFile('./manage.sh', ['deploy'], {
+      manageExec(['deploy'], {
         cwd: MINING_DIR,
         timeout: 180000,
         encoding: 'utf8',
@@ -223,14 +258,45 @@ function registerIPC() {
 
   ipcMain.handle('get-status', async () => {
     return new Promise((resolve) => {
-      execFile('./manage.sh', ['status'], {
+      // Use deploy_one.py health (JSON) for full SSH health checks
+      const args = [path.join(MINING_DIR, 'deploy_one.py'), 'health'];
+      const child = spawn(PYTHON_BIN, args, {
         cwd: MINING_DIR,
         timeout: 30000,
-        encoding: 'utf8',
-        env: pythonEnv()
-      }, (error, stdout, stderr) => {
-        resolve(error ? `Error: ${error.message}\n${stderr || stdout}` : stdout);
+        env: pythonEnv(),
       });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', d => stdout += d);
+      child.stderr.on('data', d => stderr += d);
+      child.on('close', (code) => {
+        if (code !== 0) {
+          resolve(`Error: ${stderr || stdout || 'exit code ' + code}`);
+          return;
+        }
+        try {
+          const instances = JSON.parse(stdout.trim());
+          const lines = ['=== Running Instances ==='];
+          for (const inst of instances) {
+            const id = inst.id || '?';
+            const gpu = inst.gpu_name || 'Unknown';
+            const price = inst.price ? `$${inst.price.toFixed(4)}/hr` : '';
+            if (inst.miner_running && inst.local_hashrate > 0) {
+              lines.push(`  ${id} ${gpu.padEnd(20)} ✅ ${inst.local_hashrate.toFixed(0)} TH/s  ${price}`);
+            } else if (inst.miner_running) {
+              lines.push(`  ${id} ${gpu.padEnd(20)} ⏳ booting  ${price}`);
+            } else if (inst.status === 'running') {
+              lines.push(`  ${id} ${gpu.padEnd(20)} ❌ no miner  ${price}`);
+            } else {
+              lines.push(`  ${id} ${gpu.padEnd(20)} ℹ️  ${inst.status}  ${price}`);
+            }
+          }
+          if (instances.length === 0) lines.push('  (no instances)');
+          resolve(lines.join('\n'));
+        } catch (e) {
+          resolve(`Error parsing instances: ${e.message}\n${stdout}`);
+        }
+      });
+      child.on('error', (e) => resolve(`Error: ${e.message}`));
     });
   });
 
@@ -280,7 +346,7 @@ function registerIPC() {
   // Instances
   function runInstanceCommand(command, timeout) {
     return new Promise((resolve) => {
-      execFile('python3', ['deploy_one.py', command], {
+      execFile(PYTHON_BIN, ['deploy_one.py', command], {
         cwd: MINING_DIR,
         timeout,
         encoding: 'utf8',
@@ -316,7 +382,7 @@ function registerIPC() {
   }
 
   async function getInstanceList(force = false) {
-    if (!force && Date.now() - instanceListCache.time < 10000) {
+    if (!force && Date.now() - instanceListCache.time < 5000) {
       return mergeHealth(instanceListCache.data);
     }
     if (instanceListPromise) return instanceListPromise;
@@ -328,13 +394,13 @@ function registerIPC() {
   }
 
   function refreshInstanceHealth(sender, force = false) {
-    if (!force && Date.now() - instanceHealthCache.time < 60000) {
+    if (!force && Date.now() - instanceHealthCache.time < 30000) {
       sender.send('instance-health-update', mergeHealth(instanceListCache.data));
       return Promise.resolve(instanceHealthCache.data);
     }
     if (instanceHealthPromise) return instanceHealthPromise;
     instanceHealthPromise = new Promise((resolve) => {
-      execFile('python3', ['deploy_one.py', 'health'], {
+      execFile(PYTHON_BIN, ['deploy_one.py', 'health'], {
         cwd: MINING_DIR,
         timeout: 45000,
         encoding: 'utf8',
@@ -378,7 +444,7 @@ function registerIPC() {
     sender.send('instance-deploy-start', id);
 
     return new Promise((resolve) => {
-      const child = spawn('python3', ['-u', 'deploy_one.py', 'deploy', id], {
+      const child = spawn(PYTHON_BIN, ['-u', 'deploy_one.py', 'deploy', id], {
         cwd: MINING_DIR,
         env: pythonEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
@@ -432,6 +498,62 @@ function registerIPC() {
       });
     });
   });
+
+  ipcMain.handle('kill-instance', async (event, instanceId, reason) => {
+    const id = String(instanceId || '');
+    if (!/^\d+$/.test(id)) {
+      return { success: false, output: 'Invalid instance ID' };
+    }
+
+    const sender = event.sender;
+    const args = ['-u', 'deploy_one.py', 'kill', id];
+    if (reason) args.push(String(reason));
+
+    return new Promise((resolve) => {
+      const child = spawn(PYTHON_BIN, args, {
+        cwd: MINING_DIR,
+        env: pythonEnv(),
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+
+      let output = '';
+      let timedOut = false;
+      let settled = false;
+      const sendOutput = (chunk, stream) => {
+        const text = chunk.toString();
+        output += text;
+        sender.send('instance-deploy-output', { instanceId: id, output: text, stream });
+      };
+
+      child.stdout.on('data', chunk => sendOutput(chunk, 'stdout'));
+      child.stderr.on('data', chunk => sendOutput(chunk, 'stderr'));
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, 60000);
+
+      child.on('error', error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const result = { instanceId: id, success: false, output: error.message };
+        sender.send('instance-deploy-result', result);
+        resolve(result);
+      });
+
+      child.on('close', code => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const success = !timedOut && code === 0;
+        const finalOutput = timedOut ? `${output}\nKill timed out after 60 seconds.` : output;
+        const result = { instanceId: id, success, output: finalOutput };
+        sender.send('instance-deploy-result', result);
+        resolve(result);
+      });
+    });
+  });
 }
 
 function startBackgroundTasks() {
@@ -465,7 +587,7 @@ function startBackgroundTasks() {
     } finally {
       dashboardUpdateInFlight = false;
     }
-  }, 5000);
+  }, 3000);
 
   // Earnings recording every 30 seconds
   earningsInterval = setInterval(async () => {
@@ -499,7 +621,7 @@ function startBackgroundTasks() {
         if (!cfg.automation_enabled) return;
         autodeployInFlight = true;
         try {
-          exec('./manage.sh deploy', { cwd: MINING_DIR, env: pythonEnv() }, (error, stdout, stderr) => {
+          exec(IS_WIN ? 'bash ./manage.sh deploy' : './manage.sh deploy', { cwd: MINING_DIR, env: pythonEnv() }, (error, stdout, stderr) => {
             autodeployInFlight = false;
             if (!mainWindow || mainWindow.isDestroyed()) return;
             mainWindow.webContents.send('deploy-result', {
@@ -523,7 +645,7 @@ function startBackgroundTasks() {
   function startOrchestrator() {
     if (orchestratorProcess) return;  // already running
     const env = pythonEnv();
-    const child = spawn('python3', ['manager/orchestrator_main.py'], {
+    const child = spawn(PYTHON_BIN, ['manager/orchestrator_main.py'], {
       cwd: MINING_DIR,
       env: env,
       stdio: ['ignore', 'pipe', 'pipe'],

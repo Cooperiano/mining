@@ -6,11 +6,34 @@ Thread-safe via ``fcntl`` advisory lock on every append.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+# Windows compatibility: fcntl is Unix-only
+if sys.platform == 'win32':
+    import msvcrt
+
+    def _flock_exclusive(f):
+        """Acquire exclusive lock on Windows."""
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+
+    def _flock_release(f):
+        """Release lock on Windows."""
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _flock_exclusive(f):
+        fcntl.flock(f, fcntl.LOCK_EX)
+
+    def _flock_release(f):
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _state_dir() -> Path:
@@ -74,11 +97,11 @@ def log_event(
     path = _audit_path()
 
     with open(path, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _flock_exclusive(f)
         try:
             f.write(line)
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _flock_release(f)
 
 
 def query_events(

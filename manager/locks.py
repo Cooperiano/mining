@@ -1,13 +1,14 @@
-"""fcntl-based file locks for safe concurrent operations across processes.
+"""File locks for safe concurrent operations across processes.
 
 Provides per-instance locks (deploy/kill) and a global autodeploy singleton lock.
 Process crash automatically releases locks — no stale lock files.
+Cross-platform: uses fcntl on Unix, msvcrt on Windows.
 """
 
 from __future__ import annotations
 
-import fcntl
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -26,6 +27,33 @@ def _ensure_lock_dir() -> Path:
     d = _lock_dir()
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# ── Platform-specific file locking ──────────────────────────
+
+if sys.platform == 'win32':
+    import msvcrt
+
+    def _lock_nb(fd: int) -> None:
+        """Non-blocking exclusive lock on Windows."""
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+    def _unlock(fd: int) -> None:
+        """Release lock on Windows."""
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _lock_nb(fd: int) -> None:
+        """Non-blocking exclusive lock on Unix."""
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _unlock(fd: int) -> None:
+        """Release lock on Unix."""
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class InstanceLock:
@@ -53,7 +81,7 @@ class InstanceLock:
         fd = os.open(self._lockfile, os.O_RDWR | os.O_CREAT, 0o644)
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_nb(fd)
                 self._fd = fd
                 return True
             except (OSError, IOError):
@@ -68,10 +96,7 @@ class InstanceLock:
     def release(self) -> None:
         """Release the lock and close the file descriptor."""
         if self._fd is not None:
-            try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            _unlock(self._fd)
             try:
                 os.close(self._fd)
             except OSError:
@@ -111,7 +136,7 @@ class AutodeployLock:
         fd = os.open(self._lockfile, os.O_RDWR | os.O_CREAT, 0o644)
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_nb(fd)
                 self._fd = fd
                 return True
             except (OSError, IOError):
@@ -126,10 +151,7 @@ class AutodeployLock:
     def release(self) -> None:
         """Release the lock and close the file descriptor."""
         if self._fd is not None:
-            try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
+            _unlock(self._fd)
             try:
                 os.close(self._fd)
             except OSError:

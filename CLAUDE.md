@@ -85,8 +85,10 @@ Config keys use the same normalization: `min_th_5090`, `min_th_4080_super`, etc.
 
 | File | Purpose | Critical Functions |
 |------|---------|--------------------|
-| `manager/vast.py` | Mining automation | `autodeploy_cycle()`, `_check_and_kill()`, `_parse_gpu_model()`, `_min_th_for_model()` |
+| `manager/vast.py` | Mining automation | `autodeploy_cycle()`, `_check_and_kill()`, `_parse_gpu_model()`, `_min_th_for_model()`, `change_bid()` |
+| `manager/bid_manager.py` | Dynamic bid adjuster (V1) | `calc_margin_per_hr()`, `calc_max_bid()`, `classify_margin()`, `calc_bid_adjustment()`, `record_bid_action()` |
 | `manager/minerctl.py` | CLI commands | `cmd_vast_autodeploy()`, `cmd_vast_list_offers()` |
+| `manager/instance_manager.py` | Instance lifecycle | `_handle_running()`, `_handle_dynamic_bid()`, `_should_check_bid()`, `_kill()` |
 | `electron-app/main.js` | Electron backend bridge | Python process spawning, IPC handlers |
 | `electron-app/renderer.js` | All UI rendering | `renderDashboard()`, `renderInstances()`, `renderHistory()` |
 | `electron-app/index.html` | UI structure | Table headers, tab layout, config form |
@@ -113,13 +115,64 @@ Config keys use the same normalization: `min_th_5090`, `min_th_4080_super`, etc.
 - `consecutive_failures_before_destroy` — Retry threshold
 - `new_instance_protection_minutes` — Warm-up grace period
 
+### Dynamic Bidding (V1)
+- `dynamic_bid_enabled` — Master switch (default: `false`, must explicitly enable)
+- `bid_cooldown_sec` — Min seconds between bid adjustments (default: 300)
+- `bid_min_margin_hr` — Minimum margin/hr to preserve when raising bids (default: 0.08)
+- `bid_safe_margin_hr` — Margin threshold for SAFE tier (default: 0.10)
+- `bid_watch_margin_hr` — Margin threshold for WATCH tier (default: 0.03)
+- `bid_raise_max_pct` — Max % to raise bid per adjustment (default: 10)
+- `bid_lower_pct` — % to lower bid on stable SAFE instances (default: 3)
+- `bid_min_adjustment_usd` — Skip if adjustment < this amount (default: 0.01)
+- `bid_consecutive_before_adjust` — Consecutive same-tier readings before raise (default: 2)
+- `bid_consecutive_before_lower` — Consecutive same-tier readings before lower (default: 3)
+
+### DLPerf/$ Quality Gates
+- `reject_dlperf_per_dollar` — Hard reject threshold (default: 300)
+- `min_dlperf_per_dollar` — Min acceptable for bid raises (default: 350)
+- `preferred_dlperf_per_dollar` — Preferred quality level (default: 400)
+
+## Dynamic Bidding (V1)
+
+V1 implements a **profit-aware bid adjuster** for interruptible vast.ai instances. It raises bids on profitable instances to improve survival and lowers bids on stable SAFE instances to reduce cost.
+
+**V1 scope**: bid adjustments only. **Never** destroys, creates, or deploys replacements.
+
+### Margin Tiers
+
+| Tier | Margin/hr | V1 Action |
+|------|-----------|-----------|
+| SAFE | > $0.10 | Raise if recently preempted; lower if stable |
+| WATCH | $0.03–$0.10 | Raise cautiously (half rate, capped at max_bid × 0.9) |
+| NO_CHASE | $0–$0.03 | No action (log only) |
+| REPLACE_RECOMMENDED | < $0 | No action (log for V2) |
+
+### Key Constraints
+
+- **`max_bid = earnings/hr − min_margin/hr`** — the ONLY hard ceiling for bids
+- **`dry_run=true` MUST NEVER call `vastai change bid`** — log only
+- **DLPerf/$ gate**: Instances with DLPerf/$ < `min_dlperf_per_dollar` never get bid raises
+- **Hysteresis**: Cooldown, consecutive tier count, and minimum adjustment prevent thrashing
+- Bid history persisted in `electron-app/state/bid_history.json` for debugging and V2 decisions
+
+### Data Flow
+
+```
+vast.ai API → deploy_one.py (adds is_bid, min_bid, dlperf_per_dphtotal)
+  → main.js (IPC) → renderer.js (Bid column: tier badge + price + DLPerf/$ rating)
+
+instance_manager._handle_running() → _should_check_bid() → _handle_dynamic_bid()
+  → bid_manager.calc_margin_per_hr() → classify_margin() → calc_bid_adjustment()
+  → vast.change_bid() or dry_run log → record_bid_action()
+```
+
 ## Future Optimization Directions
 
 1. **Margin-based auto-kill**: Replace simple hashrate threshold with margin calculation. Kill if `margin_per_hour < 0` (costing money). More accurate than hashrate alone because it accounts for varying rental prices.
 
 2. **Dynamic PRL price**: Currently PRL price is manually set in config. Integrate with a price API (CoinGecko, DexScreener) for real-time updates.
 
-3. **Per-instance profitability history**: Track margin over time per instance to identify trends (degrading performance, price changes).
+3. **V2 dynamic bidding**: Auto-replacement when REPLACE tier or preempted (`find_replacement()` → create → deploy). Auto-kill for negative margin instances. Preemption-triggered proactive bid raise.
 
 4. **Smart deployment**: Prioritize GPU models with the best historical margin, not just lowest price.
 

@@ -1,17 +1,53 @@
 """Thread-safe JSONL writer with file rotation.
 
 Each line is a JSON object — no read-modify-write needed.
-Thread/process-safe via ``fcntl`` advisory lock on every append.
+Thread/process-safe via advisory lock on every append.
 Files rotate at 50 MB, keeping up to 10 rotated copies.
+Cross-platform: uses fcntl on Unix, msvcrt on Windows.
 """
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+# ── Platform-specific file locking ──────────────────────────
+
+if sys.platform == 'win32':
+    import msvcrt
+
+    def _flock_ex(fd: int) -> None:
+        """Acquire exclusive lock (blocking) on Windows."""
+        import time as _t
+        deadline = _t.monotonic() + 30
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                return
+            except OSError:
+                if _t.monotonic() >= deadline:
+                    raise
+                _t.sleep(0.05)
+
+    def _flock_un(fd: int) -> None:
+        """Release lock on Windows."""
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _flock_ex(fd: int) -> None:
+        """Acquire exclusive lock (blocking) on Unix."""
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def _flock_un(fd: int) -> None:
+        """Release lock on Unix."""
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 MAX_ROTATIONS = 10
@@ -83,7 +119,7 @@ def write_record(filename: str, record: dict) -> None:
 
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _flock_ex(fd)
         try:
             stat = os.fstat(fd)
             if stat.st_size >= MAX_BYTES:
@@ -93,12 +129,12 @@ def write_record(filename: str, record: dict) -> None:
                 _rotate(filename)
                 # Re-open — _rotate renamed the old file away
                 fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                _flock_ex(fd)
 
             os.lseek(fd, 0, os.SEEK_END)
             os.write(fd, line.encode("utf-8"))
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _flock_un(fd)
     finally:
         if fd >= 0:
             os.close(fd)

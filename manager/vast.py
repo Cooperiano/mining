@@ -287,6 +287,14 @@ def _vastai_yes(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def change_bid(instance_id: str, price: float) -> tuple[int, str, str]:
+    """Change bid price for a spot/interruptible instance.
+
+    Returns (rc, stdout, stderr) from vastai CLI.
+    """
+    return _vastai(["change", "bid", str(instance_id), "--price", f"{price:.4f}"])
+
+
 def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
@@ -851,18 +859,26 @@ def _deploy_instance_inner(inst_id: str, log: Callable[[str], None] | None = Non
         emit(out.strip())
     if err.strip():
         emit(err.strip())
-    verify_cmd = [
-        "ssh", "-q", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
-        "-o", "LogLevel=QUIET", f"root@{host}", "-p", port,
-        "p=$(pgrep -c alpha-miner 2>/dev/null || true); "
-        "c=$(grep -c 'pool connected' /root/mining/miner.log 2>/dev/null || true); "
-        "echo \"$p $c\"",
-    ]
-    _, verify_out, _ = _run(verify_cmd, timeout=12)
-    try:
-        miner_count, connected_count = [int(value) for value in verify_out.strip().split()[:2]]
-    except (ValueError, IndexError):
-        miner_count, connected_count = 0, 0
+    # Wait-and-retry verification — Blackwell GPUs need more init time.
+    # Try up to 3 times with a 5s gap between each.
+    miner_count, connected_count = 0, 0
+    for _attempt in range(3):
+        import time as _t
+        _t.sleep(5)
+        verify_cmd = [
+            "ssh", "-q", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=no",
+            "-o", "LogLevel=QUIET", f"root@{host}", "-p", port,
+            "p=$(pgrep -c alpha-miner 2>/dev/null || true); "
+            "c=$(grep -c 'pool connected' /root/mining/miner.log 2>/dev/null || true); "
+            "echo \"$p $c\"",
+        ]
+        _, verify_out, _ = _run(verify_cmd, timeout=12)
+        try:
+            miner_count, connected_count = [int(value) for value in verify_out.strip().split()[:2]]
+        except (ValueError, IndexError):
+            miner_count, connected_count = 0, 0
+        if miner_count > 0 and connected_count > 0:
+            break
 
     if rc3 == 0 and miner_count > 0 and connected_count > 0:
         _mark_deployed(inst_id)
@@ -889,8 +905,14 @@ def kill_instance(inst_id: str, reason: str = "") -> str:
         lock.release()
 
 
-def _kill_instance_inner(inst_id: str, reason: str = "") -> str:
-    """Inner kill logic — lock already held."""
+def _kill_instance_inner(inst_id: str, reason: str = "", *, blacklist: bool = True) -> str:
+    """Inner kill logic — lock already held.
+
+    Args:
+        inst_id: The instance ID to destroy.
+        reason: Human-readable reason for the kill decision.
+        blacklist: If False, skip adding the machine_id to the blacklist file
+                   (e.g. for manual kills or one-off issues)."""
     cfg = _load_electron_config()
     trigger = "autodeploy" if reason else "manual"
     log_event("kill_start", instance_id=inst_id, trigger=trigger, details=reason)
@@ -938,12 +960,14 @@ def _kill_instance_inner(inst_id: str, reason: str = "") -> str:
     log_event("kill_success", instance_id=inst_id, trigger=trigger,
               details=f"{reason} [machine {machine_id}]" if machine_id else reason)
 
-    # Add to blacklist with machine ID and reason
-    if machine_id and reason:
+    # Add to blacklist with machine ID and reason (when enabled)
+    if blacklist and machine_id and reason:
         from datetime import datetime as dt
         blacklist_entry = f"{machine_id} {reason} {dt.now().strftime('%Y-%m-%d')}\n"
         with open(BLACKLIST_FILE, "a") as f:
             f.write(blacklist_entry)
+        log_event("blacklist_add", instance_id=inst_id, trigger=trigger,
+                  details=f"machine={machine_id} reason={reason[:80]}")
 
     msg = f"Destroyed: {inst_id}"
     if reason:
@@ -1164,8 +1188,14 @@ def _autodeploy_cycle_inner(
 
     # Count deploy results
     deploys_attempted = sum(1 for l in log if l.startswith("Deploying to"))
-    deploys_succeeded = sum(1 for l in log if l.startswith("OK: deployed"))
-    deploys_failed = sum(1 for l in log if l.startswith("FAILED to deploy"))
+    deploys_succeeded = sum(
+        1 for l in log
+        if l.startswith("Deployed:") or l.startswith("OK: deployed")
+    )
+    deploys_failed = sum(
+        1 for l in log
+        if l.startswith("FAIL:") or l.startswith("FAILED to deploy")
+    )
 
     instances_running = sum(1 for e in instances if isinstance(e, dict) and e.get("actual_status") == "running")
     deploy_candidate_count = sum(

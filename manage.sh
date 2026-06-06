@@ -6,6 +6,9 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
+# Cross-platform Python: Windows has 'python', Unix has 'python3'
+PYTHON="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || echo python)"
+
 BOLD='\033[1m'
 GREEN='\033[32m'
 RED='\033[31m'
@@ -17,7 +20,7 @@ case "${1:-status}" in
 
 status)
   echo -e "${BOLD}=== Running Instances ===${NC}"
-  python3 -c "
+  $PYTHON -c "
 import subprocess, re
 r=subprocess.run(['vastai','show','instances'],capture_output=True,text=True,timeout=15)
 clean=re.sub(r'\x1b\[[0-9;]*m','',r.stdout)
@@ -58,12 +61,12 @@ for l in clean.split('\n'):
 
 deploy)
   echo -e "${BOLD}=== Autodeploy ===${NC}"
-  python3 "$DIR/autodeploy_cron.py"
+  $PYTHON "$DIR/autodeploy_cron.py"
   ;;
 
 parallel)
   echo -e "${BOLD}=== Parallel Deploy ===${NC}"
-  python3 "$DIR/parallel_deploy.py" "${@:2}"
+  $PYTHON "$DIR/parallel_deploy.py" "${@:2}"
   ;;
 
 kill)
@@ -74,7 +77,7 @@ kill)
   ;;
 
 hashrate)
-  python3 "$DIR/hashrate_report.py"
+  $PYTHON "$DIR/hashrate_report.py"
   ;;
 
 log)

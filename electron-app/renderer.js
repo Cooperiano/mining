@@ -4,12 +4,12 @@ let allSessions = [];
 const cache = {};
 const inFlight = new Map();
 const renderedHtml = new WeakMap();
-let activeTab = 'dashboard';
+let activeTab = localStorage.getItem('activeTab') || 'dashboard';
 let activeTabRefreshInterval = null;
 const tabRefreshMs = {
-  records: 30000,
-  instances: 15000,
-  autodeploy: 15000,
+  records: 20000,
+  instances: 5000,
+  autodeploy: 10000,
   config: 30000,
 };
 let configDirty = false;
@@ -120,8 +120,13 @@ document.addEventListener('DOMContentLoaded', () => {
   initAutodeploy();
   initConfig();
   initIPCListeners();
-  refreshDashboard();
+  refreshActiveTab();
   scheduleActiveTabRefresh();
+
+  // Window controls (frameless on Windows)
+  document.getElementById('win-minimize')?.addEventListener('click', () => window.api.minimize());
+  document.getElementById('win-maximize')?.addEventListener('click', () => window.api.maximize());
+  document.getElementById('win-close')?.addEventListener('click', () => window.api.close());
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) refreshActiveTab();
@@ -144,6 +149,7 @@ function initTabs() {
     tab.addEventListener('click', () => {
       if (activeTab === tab.dataset.tab) return;
       activeTab = tab.dataset.tab;
+      localStorage.setItem('activeTab', activeTab);
       document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === tab));
       document.querySelectorAll('.tab-content').forEach(c => {
         c.classList.toggle('active', c.id === 'tab-' + activeTab);
@@ -152,6 +158,19 @@ function initTabs() {
       scheduleActiveTabRefresh();
     });
   });
+
+  // Restore last active tab on startup
+  if (activeTab !== 'dashboard') {
+    const targetTab = document.querySelector(`.tab[data-tab="${activeTab}"]`);
+    if (targetTab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t === targetTab));
+      document.querySelectorAll('.tab-content').forEach(c => {
+        c.classList.toggle('active', c.id === 'tab-' + activeTab);
+      });
+    } else {
+      activeTab = 'dashboard';
+    }
+  }
 }
 
 // --- IPC Listeners ---
@@ -171,7 +190,7 @@ function initIPCListeners() {
       const output = data.output || '';
       const error = data.error || '';
       appendLog(statusOutput, `
-        <div style="margin-bottom:4px;color:#888">[${timestamp}]</div>
+        <div style="margin-bottom:4px;color:var(--text-dim)">[${timestamp}]</div>
         <pre style="white-space:pre-wrap;margin:0">${escapeHtml(output + error)}</pre>
       `);
     }
@@ -185,7 +204,7 @@ function initIPCListeners() {
     const log = document.getElementById('instance-deploy-log');
     if (log) {
       const ts = new Date().toLocaleTimeString();
-      log.innerHTML = `<div style="color:#ffaa22">[${ts}] Deploying to ${escapeHtml(instanceId)}...</div>`;
+      log.innerHTML = `<div style="color:var(--yellow)">[${ts}] Deploying to ${escapeHtml(instanceId)}...</div>`;
     }
     if (isVisibleTab('instances')) refreshInstances(true);
   });
@@ -193,7 +212,7 @@ function initIPCListeners() {
   window.api.onInstanceDeployOutput((data) => {
     const log = document.getElementById('instance-deploy-log');
     if (!log || !data?.output) return;
-    const color = data.stream === 'stderr' ? '#ff4466' : '#d4d4d4';
+    const color = data.stream === 'stderr' ? 'var(--red)' : 'var(--text)';
     appendLog(log, `<span style="white-space:pre-wrap;color:${color}">${escapeHtml(data.output)}</span>`);
   });
 
@@ -201,7 +220,7 @@ function initIPCListeners() {
     const log = document.getElementById('instance-deploy-log');
     if (log) {
       const ts = new Date().toLocaleTimeString();
-      const color = data.success ? '#00cc88' : '#ff4466';
+      const color = data.success ? 'var(--accent)' : 'var(--red)';
       const status = data.success ? 'Deploy succeeded' : 'Deploy failed';
       appendLog(log, `<div style="color:${color};margin-top:8px">[${ts}] ${escapeHtml(data.instanceId)}: ${status}</div>`);
     }
@@ -749,10 +768,10 @@ function renderLogViewer(records, logType) {
     return `<details class="log-entry-detail" style="margin-bottom:2px">
       <summary style="cursor:pointer;padding:3px 0;color:var(--accent)">
         <span style="color:var(--text-dim)">#${records.length - i}</span>
-        <span style="color:#888;margin-left:8px">${ts}</span>
+        <span style="color:var(--text-dim);margin-left:8px">${ts}</span>
         <span style="color:var(--text);margin-left:8px">${escapeHtml(preview)}</span>
       </summary>
-      <pre style="background:#16161e;padding:8px;margin:4px 0;border-radius:3px;overflow-x:auto;font-size:11px;color:#c8c8d4">${escapeHtml(json)}</pre>
+      <pre style="background:var(--bg);padding:8px;margin:4px 0;border-radius:3px;overflow-x:auto;font-size:11px;color:var(--text)">${escapeHtml(json)}</pre>
     </details>`;
   }).join('');
 
@@ -846,7 +865,7 @@ function initAutodeploy() {
 
       const statusOutput = document.getElementById('status-output');
       if (statusOutput) {
-        appendLog(statusOutput, '<div style="color:#888">Deploying...</div>');
+        appendLog(statusOutput, '<div style="color:var(--text-dim)">Deploying...</div>');
       }
 
       try {
@@ -854,7 +873,7 @@ function initAutodeploy() {
         if (statusOutput) {
           const timestamp = new Date().toLocaleTimeString();
           appendLog(statusOutput, `
-            <div style="margin-bottom:4px;color:#888">[${timestamp}]</div>
+            <div style="margin-bottom:4px;color:var(--text-dim)">[${timestamp}]</div>
             <pre style="white-space:pre-wrap;margin:0">${escapeHtml(result)}</pre>
           `);
         }
@@ -1042,8 +1061,33 @@ function renderInstances(instances) {
       : '');
   }
 
+  // ── Bid tier summary ──
+  const summaryEl = document.getElementById('bid-summary');
+  if (summaryEl) {
+    const prlPrice = window._prlPrice || 0.80;
+    const bidInsts = instances.filter(i => i.is_bid && i.status === 'running');
+    let safe = 0, watch = 0, nochase = 0, loss = 0;
+    for (const inst of bidInsts) {
+      const hasHashrate = inst.pool_hashrate > 0;
+      const profitHr = hasHashrate ? (inst.pool_hashrate / 1000) * 3.226 * prlPrice : 0;
+      const marginHr = hasHashrate ? profitHr - inst.price : -inst.price;
+      if (marginHr > 0.10) safe++;
+      else if (marginHr > 0.03) watch++;
+      else if (marginHr > 0) nochase++;
+      else loss++;
+    }
+    const parts = [];
+    if (safe) parts.push(`<span style="color:#4caf50">${safe} SAFE</span>`);
+    if (watch) parts.push(`<span style="color:#e6a817">${watch} WATCH</span>`);
+    if (nochase) parts.push(`<span style="color:#ff9800">${nochase} NO$</span>`);
+    if (loss) parts.push(`<span style="color:#f44336">${loss} LOSS</span>`);
+    summaryEl.innerHTML = bidInsts.length > 0
+      ? `Bid: ${parts.join(' · ')}`
+      : '';
+  }
+
   if (!instances.length) {
-    setHtml(tbody, '<tr><td colspan="12" class="loading">No instances</td></tr>');
+    setHtml(tbody, '<tr><td colspan="13" class="loading">No instances</td></tr>');
     return;
   }
 
@@ -1075,6 +1119,28 @@ function renderInstances(instances) {
     const marginHr = hasHashrate ? profitHr - inst.price : -inst.price;
     const marginClass = marginHr >= 0 ? 'green' : 'red';
 
+    // ── Bid tier badge for interruptible instances ──
+    let bidCell = '—';
+    if (inst.is_bid) {
+      const safeMargin = 0.10;
+      const watchMargin = 0.03;
+      let tier, tierClass;
+      if (marginHr > safeMargin) { tier = 'SAFE'; tierClass = 'green'; }
+      else if (marginHr > watchMargin) { tier = 'WATCH'; tierClass = '#e6a817'; }
+      else if (marginHr > 0) { tier = 'NO$'; tierClass = 'orange'; }
+      else { tier = 'LOSS'; tierClass = 'red'; }
+
+      const dlperf = inst.dlperf_per_dphtotal || 0;
+      const dlperfTag = dlperf >= 400 ? '<span style="color:#4caf50">★</span>'
+        : dlperf >= 350 ? '<span style="color:#8bc34a">●</span>'
+        : dlperf >= 300 ? '<span style="color:#ff9800">●</span>'
+        : dlperf > 0 ? '<span style="color:#f44336">✕</span>' : '';
+
+      bidCell = `<span class="badge" style="background:${tierClass};color:#fff;font-size:10px">${tier}</span> `
+        + `<span style="font-size:10px;color:var(--text-muted)">$${(inst.min_bid || inst.price).toFixed(4)}/h</span>`
+        + (dlperfTag ? ` ${dlperfTag}` : '');
+    }
+
     return `
       <tr>
         <td style="font-family:monospace">${esc(inst.id)}</td>
@@ -1087,11 +1153,16 @@ function renderInstances(instances) {
         <td class="val green">${hasHashrate ? '$' + profitHr.toFixed(6) : '—'}</td>
         <td class="val ${marginClass}">${hasHashrate ? '$' + marginHr.toFixed(6) : '—'}</td>
         <td class="val red">$${inst.price.toFixed(4)}</td>
+        <td style="font-size:11px">${bidCell}</td>
         <td class="${state === 'unhealthy' ? 'red' : ''}" title="${esc(issue)}">${esc(issue)}</td>
         <td>
           <button class="btn btn-primary btn-sm deploy-instance-btn"
                   data-instance-id="${esc(inst.id)}"
                   ${btnDisabled}>${btnText}</button>
+          <button class="btn btn-danger btn-sm kill-instance-btn"
+                  data-instance-id="${esc(inst.id)}"
+                  data-instance-gpu="${esc(inst.gpu_name)}"
+                  ${inst.status === 'running' ? '' : 'disabled'}>Kill</button>
         </td>
       </tr>`;
   }).join(''));
@@ -1117,17 +1188,62 @@ function renderInstances(instances) {
       refreshInstances(true);
     });
   });
+
+  // Wire up kill buttons
+  tbody.querySelectorAll('.kill-instance-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const instanceId = btn.dataset.instanceId;
+      const gpuName = btn.dataset.instanceGpu || '';
+      if (!instanceId) return;
+
+      const reason = prompt(
+        `Destroy instance ${instanceId} (${gpuName})?\n\nReason (optional):`,
+        ''
+      );
+      if (reason === null) return; // user cancelled
+
+      btn.disabled = true;
+      btn.textContent = 'Killing...';
+
+      try {
+        const result = await window.api.killInstance(instanceId, reason);
+        console.log('Kill result:', result);
+      } catch (e) {
+        console.error('Kill failed:', e);
+      }
+
+      btn.disabled = false;
+      btn.textContent = 'Kill';
+      refreshInstances(true);
+    });
+  });
 }
 
 // ============ CONFIG ============
 
 const numericConfigFields = new Set([
   'prl_price', 'earn_rate', 'electricity_price_usd_kwh', 'owned_total_watts',
-  'vast_max_price', 'vastai_disk_gb', 'min_th_5090', 'min_th_4090',
-  'min_th_4060ti', 'kill_threshold_gpu_count', 'vast_search_min_gpus',
+  'vast_max_price', 'vastai_disk_gb',
+  // GPU hashrate thresholds
+  'min_th_5090', 'min_th_5080', 'min_th_5070_ti', 'min_th_5070',
+  'min_th_4090', 'min_th_4080_super', 'min_th_4080',
+  'min_th_4070_ti_super', 'min_th_4070_ti', 'min_th_4070_super', 'min_th_4070',
+  'min_th_4060_ti', 'min_th_4060',
+  'min_th_3090_ti', 'min_th_3090', 'min_th_3080_ti', 'min_th_3080',
+  'min_th_3070_ti', 'min_th_3070', 'min_th_3060_ti', 'min_th_3060',
+  'min_th_h100', 'min_th_h200', 'min_th_b200',
+  'min_th_a100', 'min_th_a6000', 'min_th_a5000', 'min_th_a4000',
+  'min_th_l40s', 'min_th_l40',
+  'kill_threshold_gpu_count', 'vast_search_min_gpus',
   'autodeploy_interval_sec', 'max_destroys_per_hour',
   'consecutive_failures_before_destroy', 'new_instance_protection_minutes',
   'th_per_dollar_hr_threshold',
+  // Dynamic bidding
+  'bid_cooldown_sec', 'bid_min_margin_hr', 'bid_safe_margin_hr',
+  'bid_watch_margin_hr', 'bid_raise_max_pct', 'bid_lower_pct',
+  'bid_min_adjustment_usd', 'bid_consecutive_before_adjust',
+  'bid_consecutive_before_lower',
+  'reject_dlperf_per_dollar', 'min_dlperf_per_dollar', 'preferred_dlperf_per_dollar',
 ]);
 
 function initConfig() {
