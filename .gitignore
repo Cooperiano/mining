@@ -1,0 +1,43 @@
+# Binaries
+alpha-miner
+CUDA-kernal
+pearl-miner-v8
+pearl-bin/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Node/Electron
+node_modules/
+electron-app/node_modules/
+dist/
+out/
+
+# State files (local runtime data)
+.vast_deployed
+.vast_bad
+.vast_blacklist
+.vast_saved
+autodeploy.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Sub-projects (have own repos)
+AgentFlow/
+mining-agent-system/
+
+# Electron app build
+Pearl Miner.app/
+
+# Logs
+*.log
+/tmp/

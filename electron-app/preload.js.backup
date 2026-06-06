@@ -1,0 +1,28 @@
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('api', {
+  // Dashboard
+  getDashboard: () => ipcRenderer.invoke('get-dashboard'),
+
+  // Sessions (read-only)
+  getAllSessions: () => ipcRenderer.invoke('session-all'),
+
+  // Profit (read-only snapshot)
+  profitabilitySnapshot: () => ipcRenderer.invoke('profit-snapshot'),
+
+  // Deploy management
+  deployNow: () => ipcRenderer.invoke('deploy-now'),
+  getStatus: () => ipcRenderer.invoke('get-status'),
+  getBlacklist: () => ipcRenderer.invoke('get-blacklist'),
+  addToBlacklist: (entry) => ipcRenderer.invoke('add-to-blacklist', entry),
+  getDeployLog: () => ipcRenderer.invoke('get-deploy-log'),
+
+  // Event listeners
+  onDashboardUpdate: (callback) => {
+    ipcRenderer.on('dashboard-update', (_event, data) => callback(data));
+  },
+
+  onDeployResult: (callback) => {
+    ipcRenderer.on('deploy-result', (_event, data) => callback(data));
+  },
+});

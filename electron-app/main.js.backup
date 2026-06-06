@@ -1,0 +1,308 @@
+const { app, BrowserWindow, ipcMain } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const { exec, execSync } = require('child_process');
+
+const store = require('./session-store');
+const pool = require('./pool');
+const profit = require('./profit-engine');
+
+const IS_DEV = process.argv.includes('--dev');
+let mainWindow = null;
+let dashboardInterval = null;
+let deployInterval = null;
+let watchers = [];
+const MINING_DIR = '/Users/juliancooper/Desktop/projects/mining';
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Pearl Miner — Analytics',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  mainWindow.loadFile('index.html');
+
+  if (IS_DEV) {
+    mainWindow.webContents.openDevTools();
+    setupHotReload();
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+function registerIPC() {
+  // Dashboard
+  ipcMain.handle('get-dashboard', async () => {
+    const [dashData, profitData] = await Promise.all([
+      pool.getDashboardData(),
+      profit.profitabilitySnapshot(),
+    ]);
+    return {
+      ...dashData,
+      prl_price: profitData.prlPrice,
+      priceSource: profitData.priceSource,
+      earningsPerHr: profitData.earningsPerHr,
+      rentalCostHr: profitData.rentalCostHr,
+      electricityCostHr: profitData.electricityCostHr,
+      vastBilledTotal: profitData.vastBilledTotal,
+      electricityTotalCost: profitData.electricityTotalCost,
+      totalCostHr: profitData.totalCostHr,
+      netProfitHr: profitData.netProfitHr,
+      activeSessions: profitData.activeSessions,
+      total_live_th: profitData.total_live_th,
+    };
+  });
+
+  // Sessions (read-only)
+  ipcMain.handle('session-all', async () => {
+    return store.getAllSessions();
+  });
+
+  // Profit (read-only)
+  ipcMain.handle('profit-snapshot', async () => {
+    return profit.profitabilitySnapshot();
+  });
+
+  // Deploy management
+  ipcMain.handle('deploy-now', async () => {
+    try {
+      return execSync('./manage.sh deploy', {
+        cwd: MINING_DIR,
+        timeout: 180000,
+        encoding: 'utf8'
+      });
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
+  });
+
+  ipcMain.handle('get-status', async () => {
+    try {
+      return execSync('./manage.sh status', {
+        cwd: MINING_DIR,
+        timeout: 30000,
+        encoding: 'utf8'
+      });
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
+  });
+
+  ipcMain.handle('get-blacklist', async () => {
+    try {
+      const blacklistPath = path.join(MINING_DIR, '.vast_blacklist');
+      if (fs.existsSync(blacklistPath)) {
+        return fs.readFileSync(blacklistPath, 'utf8');
+      }
+      return '';
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
+  });
+
+  ipcMain.handle('add-to-blacklist', async (event, entry) => {
+    try {
+      const blacklistPath = path.join(MINING_DIR, '.vast_blacklist');
+      fs.appendFileSync(blacklistPath, entry + '\n');
+      return true;
+    } catch (e) {
+      return false;
+    }
+  });
+
+  ipcMain.handle('get-deploy-log', async () => {
+    try {
+      const logPath = '/tmp/autodeploy.log';
+      if (fs.existsSync(logPath)) {
+        const stats = fs.statSync(logPath);
+        const maxSize = 100 * 1024; // Last 100KB
+        if (stats.size > maxSize) {
+          const fd = fs.openSync(logPath, 'r');
+          const buffer = Buffer.alloc(maxSize);
+          fs.readSync(fd, buffer, 0, maxSize, stats.size - maxSize);
+          fs.closeSync(fd);
+          return buffer.toString('utf8').split('\n').slice(1).join('\n');
+        }
+        return fs.readFileSync(logPath, 'utf8');
+      }
+      return '';
+    } catch (e) {
+      return `Error: ${e.message}`;
+    }
+  });
+}
+
+function startBackgroundTasks() {
+  // Dashboard poll every 5 seconds
+  dashboardInterval = setInterval(async () => {
+    if (!mainWindow) return;
+    try {
+      const [dashData, profitData] = await Promise.all([
+        pool.getDashboardData(),
+        profit.profitabilitySnapshot(),
+      ]);
+
+      // Update hashrate samples for active sessions (historical tracking)
+      const activeSessions = store.getActiveSessions();
+      const workers = dashData.workers || [];
+      for (const session of activeSessions) {
+        if (session.status !== 'mining' || !session.worker_name) continue;
+        const matching = workers.filter(w =>
+          w.name.includes(session.worker_name.split('-gpu')[0])
+        );
+        if (matching.length > 0) {
+          const totalLive = matching.reduce((s, w) => s + w.live_th, 0);
+          const totalH1 = matching.reduce((s, w) => s + w.h1_th, 0);
+          store.updateHashrate(session.id, totalLive, totalH1);
+        }
+      }
+
+      mainWindow.webContents.send('dashboard-update', {
+        ...dashData,
+        prl_price: profitData.prlPrice,
+        priceSource: profitData.priceSource,
+        earningsPerHr: profitData.earningsPerHr,
+        rentalCostHr: profitData.rentalCostHr,
+        electricityCostHr: profitData.electricityCostHr,
+        vastBilledTotal: profitData.vastBilledTotal,
+        electricityTotalCost: profitData.electricityTotalCost,
+        totalCostHr: profitData.totalCostHr,
+        netProfitHr: profitData.netProfitHr,
+        activeSessions: profitData.activeSessions,
+        total_live_th: profitData.total_live_th,
+      });
+    } catch (_) {}
+  }, 5000);
+
+  // Autodeploy every minute
+  deployInterval = setInterval(async () => {
+    if (!mainWindow) return;
+    try {
+      exec('./manage.sh deploy', { cwd: MINING_DIR }, (error, stdout, stderr) => {
+        mainWindow.webContents.send('deploy-result', {
+          timestamp: new Date().toISOString(),
+          output: stdout,
+          error: error?.message || stderr
+        });
+      });
+    } catch (e) {
+      mainWindow.webContents.send('deploy-result', {
+        timestamp: new Date().toISOString(),
+        output: '',
+        error: e.message
+      });
+    }
+  }, 60000);
+
+  // Initial dashboard fetch
+  setTimeout(async () => {
+    if (mainWindow) {
+      try {
+        const [dashData, profitData] = await Promise.all([
+          pool.getDashboardData(),
+          profit.profitabilitySnapshot(),
+        ]);
+        mainWindow.webContents.send('dashboard-update', {
+          ...dashData,
+          prl_price: profitData.prlPrice,
+          priceSource: profitData.priceSource,
+          earningsPerHr: profitData.earningsPerHr,
+          rentalCostHr: profitData.rentalCostHr,
+          electricityCostHr: profitData.electricityCostHr,
+          vastBilledTotal: profitData.vastBilledTotal,
+          electricityTotalCost: profitData.electricityTotalCost,
+          totalCostHr: profitData.totalCostHr,
+          netProfitHr: profitData.netProfitHr,
+          activeSessions: profitData.activeSessions,
+          total_live_th: profitData.total_live_th,
+        });
+      } catch (_) {}
+    }
+  }, 1000);
+}
+
+function stopBackgroundTasks() {
+  if (dashboardInterval) clearInterval(dashboardInterval);
+  if (deployInterval) clearInterval(deployInterval);
+}
+
+function setupHotReload() {
+  const rendererFiles = ['index.html', 'styles.css', 'renderer.js', 'preload.js'];
+  const mainFiles = ['main.js', 'vast.js', 'pool.js', 'session-store.js', 'profit-engine.js'];
+  const debounceTimers = {};
+
+  function debounced(file, delay, fn) {
+    if (debounceTimers[file]) clearTimeout(debounceTimers[file]);
+    debounceTimers[file] = setTimeout(fn, delay);
+  }
+
+  for (const file of rendererFiles) {
+    const fp = path.join(__dirname, file);
+    try {
+      const w = fs.watch(fp, () => {
+        debounced(file, 300, () => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            console.log(`[hot-reload] renderer: ${file}`);
+            mainWindow.webContents.reloadIgnoringCache();
+          }
+        });
+      });
+      watchers.push(w);
+    } catch (_) {}
+  }
+
+  for (const file of mainFiles) {
+    const fp = path.join(__dirname, file);
+    try {
+      const w = fs.watch(fp, () => {
+        debounced(file, 500, () => {
+          console.log(`[hot-reload] main: ${file} — restarting...`);
+          stopBackgroundTasks();
+          watchers.forEach(w => w.close());
+          Object.values(debounceTimers).forEach(clearTimeout);
+          const { spawn } = require('child_process');
+          spawn(process.argv[0], process.argv.slice(1), { detached: true, stdio: 'inherit' });
+          app.exit(0);
+        });
+      });
+      watchers.push(w);
+    } catch (_) {}
+  }
+
+  console.log('[hot-reload] watching', rendererFiles.length + mainFiles.length, 'files');
+}
+
+app.whenReady().then(() => {
+  registerIPC();
+  createWindow();
+  startBackgroundTasks();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  stopBackgroundTasks();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  stopBackgroundTasks();
+  watchers.forEach(w => w.close());
+  watchers = [];
+});

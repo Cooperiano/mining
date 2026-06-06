@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+  <title>Pearl Miner — Analytics</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <h1 class="logo">&#9762; Pearl Miner — Analytics</h1>
+      <div class="header-stats">
+        <span class="stat" id="header-hashrate">-- TH/s</span>
+        <span class="stat" id="header-balance">-- PRL</span>
+        <span class="stat" id="header-earnings">--/hr</span>
+        <span class="stat" id="header-workers">-- workers</span>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard">Dashboard</button>
+      <button class="tab" data-tab="records">Records</button>
+      <button class="tab" data-tab="instances">Instances</button>
+      <button class="tab" data-tab="autodeploy">Autodeploy</button>
+      <button class="tab" data-tab="config">Config</button>
+    </nav>
+
+    <!-- Dashboard Tab -->
+    <section class="tab-content active" id="tab-dashboard">
+      <div class="dashboard-grid">
+        <!-- Workers Table -->
+        <div class="card card-full">
+          <h2>Workers <label style="font-size:13px;font-weight:400;margin-left:12px;cursor:pointer"><input type="checkbox" id="hide-idle" checked style="vertical-align:middle"> Hide Idle</label> <span id="workers-count" style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px"></span></h2>
+          <div class="table-wrap">
+            <table id="workers-table">
+              <thead>
+                <tr>
+                  <th class="sortable" data-sort="machine">Machine ▾</th>
+                  <th class="sortable" data-sort="gpu">GPU</th>
+                  <th class="sortable" data-sort="live_th">Live TH/s ▾</th>
+                  <th class="sortable" data-sort="h1_th">1h TH/s</th>
+                  <th class="sortable" data-sort="earn_hr">Earn/hr</th>
+                  <th class="sortable" data-sort="h24_th">24h TH/s</th>
+                  <th class="sortable" data-sort="power">Power</th>
+                  <th class="sortable" data-sort="status">Status</th>
+                </tr>
+              </thead>
+              <tbody id="workers-body">
+                <tr><td colspan="8" class="loading">Loading...</td></tr>
+              </tbody>
+              <tfoot id="workers-foot"></tfoot>
+            </table>
+          </div>
+        </div>
+
+        <!-- Profitability Card -->
+        <div class="card">
+          <h2>Profitability</h2>
+          <div class="profit-summary">
+            <div class="profit-row">
+              <span>PRL Price</span>
+              <span class="val" id="profit-prl-price">$0.80</span>
+            </div>
+            <div class="profit-row">
+              <span>Earnings/hr</span>
+              <span class="val green" id="profit-earn-hr">$0.00</span>
+            </div>
+            <div class="profit-row">
+              <span>Your TH/s</span>
+              <span class="val" id="profit-est-th">—</span>
+            </div>
+            <div class="profit-row">
+              <span>Pool Hashrate</span>
+              <span class="val" id="profit-pool-hash">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cost Breakdown Card -->
+        <div class="card">
+          <h2>Cost Breakdown</h2>
+          <div class="profit-summary">
+            <div class="profit-row">
+              <span>Electricity/hr</span>
+              <span class="val red" id="profit-elec-hr">$0.00</span>
+            </div>
+            <div class="profit-row">
+              <span>Vast Rate/hr</span>
+              <span class="val red" id="profit-vast-rate">$0.00</span>
+            </div>
+            <div class="profit-row total">
+              <span>Total Cost/hr</span>
+              <span class="val red" id="profit-total-cost-hr">$0.00</span>
+            </div>
+            <div class="profit-row total" style="font-size:15px">
+              <span>Net Margin/hr</span>
+              <span class="val" id="profit-net-hr" style="font-size:15px">$0.00</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Balance Card -->
+        <div class="card">
+          <h2>Wallet / Margin</h2>
+          <div class="profit-summary">
+            <div class="profit-row">
+              <span>Unpaid Balance</span>
+              <span class="val" id="wallet-balance">0.00 PRL</span>
+            </div>
+            <div class="profit-row">
+              <span>Total Paid</span>
+              <span class="val green" id="wallet-paid">0.00 PRL</span>
+            </div>
+            <div class="profit-row">
+              <span>PRL Price</span>
+              <span class="val" id="wallet-price">$0.80</span>
+            </div>
+            <div class="profit-row">
+              <span>Vast Bill (total)</span>
+              <span class="val red" id="wallet-vast-billed">$0.00</span>
+            </div>
+            <div class="profit-row">
+              <span>Electricity (total)</span>
+              <span class="val red" id="wallet-elec-total">$0.00</span>
+            </div>
+            <div class="profit-row total">
+              <span>Net Value (PRL - Costs)</span>
+              <span class="val" id="wallet-net-value">$0.00</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Records Tab (was History) -->
+    <section class="tab-content" id="tab-records">
+      <!-- Toolbar -->
+      <div class="records-toolbar">
+        <div class="records-nav">
+          <button class="records-nav-btn active" data-records-view="sessions">Session Summary</button>
+          <button class="records-nav-btn" data-records-view="kill-decisions">Kill Decisions</button>
+          <button class="records-nav-btn" data-records-view="cycle-history">Cycle History</button>
+          <button class="records-nav-btn" data-records-view="earnings-timeline">Earnings Timeline</button>
+          <button class="records-nav-btn" data-records-view="log-viewer">Log Viewer</button>
+        </div>
+        <div class="records-actions">
+          <button id="export-csv-btn" class="btn" title="Export sessions as CSV">&#10515; Export CSV</button>
+        </div>
+      </div>
+
+      <!-- Session Summary View -->
+      <div class="records-view active" id="records-view-sessions">
+        <div class="card card-full">
+          <h2>Session Summary</h2>
+          <div class="table-wrap records-table-wrap">
+            <table id="records-sessions-table">
+              <thead>
+                <tr>
+                  <th>Started</th>
+                  <th>Ended</th>
+                  <th>Duration</th>
+                  <th>Worker</th>
+                  <th>GPU</th>
+                  <th>Peak TH/s</th>
+                  <th>Rent Cost</th>
+                  <th>Elec Cost</th>
+                  <th>Total Cost</th>
+                  <th>Earned</th>
+                  <th>Net</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody id="records-sessions-body">
+                <tr><td colspan="12" class="loading">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Kill Decisions View -->
+      <div class="records-view" id="records-view-kill-decisions">
+        <div class="card card-full">
+          <h2>Kill Decisions <span id="kill-decisions-count" style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px"></span></h2>
+          <div class="table-wrap records-table-wrap">
+            <table id="kill-decisions-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Instance</th>
+                  <th>Machine</th>
+                  <th>GPU</th>
+                  <th>Live TH/s</th>
+                  <th>1h TH/s</th>
+                  <th>Min TH</th>
+                  <th>Price/GPU</th>
+                  <th>Type</th>
+                  <th>Executed</th>
+                </tr>
+              </thead>
+              <tbody id="kill-decisions-body">
+                <tr><td colspan="10" class="loading">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cycle History View -->
+      <div class="records-view" id="records-view-cycle-history">
+        <div class="card card-full">
+          <h2>Cycle History <span id="cycle-history-count" style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px"></span></h2>
+          <div class="table-wrap records-table-wrap">
+            <table id="cycle-history-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Duration</th>
+                  <th>PRL Price</th>
+                  <th>Max $/GPU</th>
+                  <th>Cost Kills</th>
+                  <th>Perf Kills</th>
+                  <th>Warmup Skip</th>
+                  <th>Deploy OK</th>
+                  <th>Deploy Fail</th>
+                  <th>Instances</th>
+                  <th>Dry Run</th>
+                </tr>
+              </thead>
+              <tbody id="cycle-history-body">
+                <tr><td colspan="11" class="loading">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Earnings Timeline View -->
+      <div class="records-view" id="records-view-earnings-timeline">
+        <div class="card card-full">
+          <h2>Earnings Timeline <span style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px">(last 24h, 30s ticks)</span>
+            <button id="refresh-earnings-btn" class="btn" style="float:right;font-size:13px;padding:6px 16px">Refresh</button>
+          </h2>
+          <div class="earnings-timeline-chart" id="earnings-timeline-chart">
+            <div class="earnings-timeline-bars" id="earnings-timeline-bars"></div>
+            <div class="earnings-timeline-axis" id="earnings-timeline-axis"></div>
+          </div>
+          <div class="earnings-timeline-legend" id="earnings-timeline-legend">
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--accent)"></span> Net Profit/hr</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--red)"></span> Cost/hr</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--blue)"></span> Earnings/hr</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Log Viewer View -->
+      <div class="records-view" id="records-view-log-viewer">
+        <div class="card card-full">
+          <h2>Structured Log Viewer
+            <button id="refresh-log-viewer-btn" class="btn" style="float:right;font-size:13px;padding:6px 16px">Refresh</button>
+          </h2>
+          <div style="margin-bottom:12px">
+            <label style="color:var(--text-dim);margin-right:8px">Log Type:</label>
+            <select id="log-viewer-type" style="padding:6px 10px;font-size:13px">
+              <option value="kill_decisions.jsonl">Kill Decisions</option>
+              <option value="cycle_log.jsonl">Cycle Log</option>
+              <option value="earnings_log.jsonl">Earnings Log</option>
+              <option value="worker_snapshots.jsonl">Worker Snapshots</option>
+              <option value="instance_snapshots.jsonl">Instance Snapshots</option>
+              <option value="config_log.jsonl">Config Changes</option>
+            </select>
+            <label style="color:var(--text-dim);margin-left:16px;margin-right:8px">Lines:</label>
+            <select id="log-viewer-limit" style="padding:6px 10px;font-size:13px">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+          <div class="log-window" id="log-viewer-output" style="max-height:600px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;border-radius:4px">
+            Select a log type and click Refresh.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Instances Tab -->
+    <section class="tab-content" id="tab-instances">
+      <div class="dashboard-grid">
+        <div class="card card-full">
+          <h2>
+            Instances
+            <button id="refresh-instances-btn" class="btn" style="float:right;font-size:13px;padding:6px 16px">
+              Refresh
+            </button>
+            <span id="instances-count" style="font-size:12px;color:var(--text-muted);font-weight:400;margin-left:8px"></span>
+          </h2>
+          <div class="table-wrap">
+            <table id="instances-table">
+              <thead>
+                <tr>
+                  <th>Instance ID</th>
+                  <th>GPU</th>
+                  <th>State</th>
+                  <th>GPU Load</th>
+                  <th>VRAM</th>
+                  <th>Local TH/s</th>
+                  <th>Pool TH/s</th>
+                  <th>Profit/hr</th>
+                  <th>Margin/hr</th>
+                  <th>Price/hr</th>
+                  <th>Issue</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="instances-body">
+                <tr><td colspan="12" class="loading">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Deploy Log -->
+        <div class="card card-full">
+          <h2>Deploy Output</h2>
+          <div class="log-window" id="instance-deploy-log" style="max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+            No deploys yet.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Autodeploy Tab -->
+    <section class="tab-content" id="tab-autodeploy">
+      <div class="dashboard-grid">
+        <!-- Status & Control -->
+        <div class="card card-full">
+          <h2>
+            Autodeploy Status
+            <button id="deploy-now-btn" class="btn btn-primary" style="float:right;font-size:13px;padding:6px 16px">
+              Deploy Now
+            </button>
+          </h2>
+          <div style="margin-bottom:12px">
+            <strong>Current Status:</strong> <span id="autodeploy-status">Loading...</span>
+          </div>
+          <div class="log-window" id="status-output">
+            Loading status...
+          </div>
+        </div>
+
+        <!-- Deploy Log -->
+        <div class="card card-full">
+          <h2>
+            Deploy Log
+            <button id="refresh-log-btn" class="btn" style="float:right;font-size:13px;padding:6px 16px">
+              Refresh
+            </button>
+          </h2>
+          <div class="log-window" id="deploy-log" style="max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+            Loading log...
+          </div>
+        </div>
+
+        <!-- Blacklist -->
+        <div class="card card-full">
+          <h2>Blacklist (Machine IDs)</h2>
+          <div class="log-window" id="blacklist-output" style="max-height:200px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+            Loading blacklist...
+          </div>
+          <div style="margin-top:12px">
+            <input type="text" id="blacklist-input" placeholder="Machine ID and reason (e.g., 12345 no_network)" style="width:60%;padding:6px;font-size:13px;">
+            <button id="add-blacklist-btn" class="btn btn-primary">Add to Blacklist</button>
+          </div>
+        </div>
+
+        <!-- Audit Log -->
+        <div class="card card-full">
+          <h2>
+            Audit Log
+            <button id="refresh-audit-btn" class="btn" style="float:right;font-size:13px;padding:6px 16px">
+              Refresh
+            </button>
+          </h2>
+          <div class="log-window" id="audit-log-output" style="max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;background:#1e1e1e;color:#d4d4d4;padding:12px;">
+            Loading audit log...
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Config Tab -->
+    <section class="tab-content" id="tab-config">
+      <form id="config-form" class="config-grid">
+        <div class="card">
+          <h2>Pearl</h2>
+          <label class="config-field"><span>Wallet</span><input name="wallet" type="text"></label>
+          <label class="config-field"><span>API URL</span><input name="api_url" type="url"></label>
+          <label class="config-field"><span>PRL Price (USD)</span><input name="prl_price" type="number" min="0" step="0.0001"></label>
+          <label class="config-field"><span>Earn Rate</span><input name="earn_rate" type="number" min="0" step="0.001"></label>
+        </div>
+
+        <div class="card">
+          <h2>Cost</h2>
+          <label class="config-field"><span>Electricity USD/kWh</span><input name="electricity_price_usd_kwh" type="number" min="0" step="0.001"></label>
+          <label class="config-field"><span>Owned Total Watts</span><input name="owned_total_watts" type="number" min="0" step="1"></label>
+          <label class="config-field"><span>Vast Max Price</span><input name="vast_max_price" type="number" min="0" step="0.01" placeholder="Automatic"></label>
+          <label class="config-field"><span>Vast Disk GB</span><input name="vastai_disk_gb" type="number" min="5" step="1"></label>
+        </div>
+
+        <div class="card">
+          <h2>Hashrate Thresholds</h2>
+          <label class="config-field"><span>RTX 5090 Min TH/s</span><input name="min_th_5090" type="number" min="0" step="1"></label>
+          <label class="config-field"><span>RTX 4090 Min TH/s</span><input name="min_th_4090" type="number" min="0" step="1"></label>
+          <label class="config-field"><span>RTX 4060 Ti Min TH/s</span><input name="min_th_4060ti" type="number" min="0" step="1"></label>
+          <label class="config-field"><span>Kill Threshold GPU Count</span><input name="kill_threshold_gpu_count" type="number" min="1" step="1"></label>
+        </div>
+
+        <div class="card">
+          <h2>Vast / Autodeploy</h2>
+          <label class="config-field"><span>Search GPU</span><input name="vast_search_gpu" type="text"></label>
+          <label class="config-field"><span>Minimum GPUs</span><input name="vast_search_min_gpus" type="number" min="1" step="1"></label>
+          <label class="config-field"><span>Autodeploy Interval (sec)</span><input name="autodeploy_interval_sec" type="number" min="30" step="30"></label>
+          <label class="config-check"><input name="vast_verified_only" type="checkbox"><span>Verified hosts only</span></label>
+          <label class="config-check"><input name="kill_on_bad_network" type="checkbox"><span>Kill on bad network</span></label>
+        </div>
+
+        <div class="card">
+          <h2>Safety</h2>
+          <label class="config-check"><input name="automation_enabled" type="checkbox"><span>Automation enabled</span></label>
+          <label class="config-check"><input name="auto_deploy_enabled" type="checkbox"><span>Auto-deploy</span></label>
+          <label class="config-check"><input name="auto_destroy_enabled" type="checkbox"><span>Auto-destroy (dangerous)</span></label>
+          <label class="config-check"><input name="dry_run" type="checkbox"><span>Dry run (log only)</span></label>
+          <label class="config-field"><span>Max destroys/hour</span><input name="max_destroys_per_hour" type="number" min="0" step="1"></label>
+          <label class="config-field"><span>Failures before destroy</span><input name="consecutive_failures_before_destroy" type="number" min="1" step="1"></label>
+          <label class="config-field"><span>Protection period (min)</span><input name="new_instance_protection_minutes" type="number" min="0" step="5"></label>
+        </div>
+
+        <div class="card">
+          <h2>Orchestrator Mode</h2>
+          <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+            Per-instance manager: each instance gets its own async thread for independent monitoring and lifecycle.
+          </div>
+          <label class="config-check"><input name="orchestrator_mode" type="checkbox"><span>Orchestrator mode</span></label>
+          <label class="config-field"><span>Data refresh interval (sec)</span><input name="tick_interval_sec" type="number" min="5" step="5"></label>
+          <label class="config-field"><span>Instance check interval (sec)</span><input name="instance_check_interval_sec" type="number" min="10" step="10"></label>
+          <label class="config-field"><span>Discovery interval (sec)</span><input name="orchestrator_interval_sec" type="number" min="5" step="5"></label>
+        </div>
+
+        <div class="card">
+          <h2>Cost-Effective Whitelist</h2>
+          <label class="config-field"><span>TH/$/hr Threshold</span><input name="th_per_dollar_hr_threshold" type="number" min="0" step="0.1"></label>
+          <label class="config-field"><span>Allowed Regions</span><input name="whitelist_regions" type="text" placeholder="North America, Asia, Europe"></label>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:8px">
+            TH/$/hr = reference hashrate (TH/s) &divide; price per GPU ($/hr). Higher = better value.
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+            Regions: comma-separated. Options: North America, Asia, Europe, South America, Oceania, Africa.
+          </div>
+        </div>
+
+        <div class="card card-full config-actions">
+          <span id="config-status">Loading configuration...</span>
+          <button id="config-save-btn" class="btn btn-primary" type="submit">Save Configuration</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
