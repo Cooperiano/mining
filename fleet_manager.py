@@ -14,8 +14,7 @@ os.environ["PATH"] = os.path.expanduser("~/miniconda3/bin:") + os.environ.get("P
 
 MINING_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(MINING_DIR / "manager"))
-from vast import _read_state, DEPLOYED_FILE, BAD_FILE, BLACKLIST_FILE
-
+from vast import _read_state, _deployed_file, _bad_file, BLACKLIST_FILE
 
 def _run(cmd, timeout=30):
     try:
@@ -29,21 +28,46 @@ def get_all_instances() -> list[dict]:
     rc, stdout, _ = _run(["vastai", "show", "instances-v1", "--raw"], timeout=20)
     if rc != 0:
         return []
-    data = json.loads(stdout)
-    instances = data.get("instances", data) if isinstance(data, dict) else data
-    result = []
-    for inst in instances:
-        status = str(inst.get("actual_status", "unknown") or "unknown")
-        result.append({
-            "id": str(inst["id"]),
-            "machine_id": str(inst.get("machine_id", "") or ""),
-            "gpu": str(inst.get("gpu_name", "?") or "?"),
-            "num_gpus": int(inst.get("num_gpus", 1) or 1),
-            "status": status,
-            "dph": float(inst.get("dph_total", 0) or 0),
-            "geo": str(inst.get("geolocation", "?") or "?"),
-        })
-    return result
+    try:
+        data = json.loads(stdout)
+        instances = data.get("instances", data) if isinstance(data, dict) else data
+        result = []
+        for inst in instances:
+            status = str(inst.get("actual_status", "unknown") or "unknown")
+            result.append({
+                "id": str(inst["id"]),
+                "machine_id": str(inst.get("machine_id", "") or ""),
+                "gpu": str(inst.get("gpu_name", "?") or "?"),
+                "num_gpus": int(inst.get("num_gpus", 1) or 1),
+                "status": status,
+                "dph": float(inst.get("dph_total", 0) or 0),
+                "geo": str(inst.get("geolocation", "?") or "?"),
+            })
+        return result
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # Fallback: parse plain text output
+        lines = stdout.strip().split("\n")
+        result = []
+        for line in lines[1:]:  # skip header
+            if not line.strip():
+                continue
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            try:
+                inst = {
+                    "id": parts[1],
+                    "machine_id": parts[2],
+                    "gpu": parts[3] if len(parts) > 3 else "?",
+                    "num_gpus": int(parts[4]) if len(parts) > 4 else 1,
+                    "status": parts[5],
+                    "dph": float(parts[6]) if len(parts) > 6 else 0,
+                    "geo": parts[7] if len(parts) > 7 else "?",
+                }
+                result.append(inst)
+            except (ValueError, IndexError):
+                continue
+        return result
 
 
 def show_status():
@@ -52,8 +76,8 @@ def show_status():
         print("No instances.")
         return
 
-    deployed = _read_state(DEPLOYED_FILE)
-    bad = _read_state(BAD_FILE)
+    deployed = _read_state(_deployed_file())
+    bad = _read_state(_bad_file())
     blacklisted = set()
     if BLACKLIST_FILE.exists():
         for line in BLACKLIST_FILE.read_text().splitlines():

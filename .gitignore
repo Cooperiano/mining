@@ -26,11 +26,17 @@ logs/
 .vast_saved
 electron-app/state/locks/
 electron-app/state/*.jsonl
+electron-app/state/config.json
+electron-app/state/bad.json
+electron-app/state/destroy_tracker.json
 electron-app/state/sessions.json
 electron-app/state/price_cache.json
+electron-app/state/dashboard_cache.json
 electron-app/state/deployed.json
 electron-app/state/cost_effective_offers.json
 electron-app/state/deploy_times.json
+electron-app/state/salad_cost_tracker.json
+electron-app/state/salad_cumulative_override.json
 mining-agent-system/state/
 
 # Backups
@@ -54,3 +60,13 @@ node_modules/
 
 # Claude Code
 .claude/
+
+# Test artifacts
+.playwright-mcp/
+
+# Transient reports
+fleet_status_report_*.md
+fleet_*.md
+
+# Deployment configs (contain wallet)
+nosana-config.json
